@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: expenses
+      POSTGRES_DB: expenses
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-expenses-local-only}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U expenses -d expenses"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  app:
+    build:
+      context: .
+      target: runtime
+    environment:
+      DATABASE_URL: postgres://expenses:${POSTGRES_PASSWORD:-expenses-local-only}@db:5432/expenses?sslmode=disable
+      LISTEN_ADDR: :8080
+      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Moscow}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4.1-mini}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-30s}
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/expensebot", "-healthcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 5s
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+    environment:
+      TEST_DATABASE_URL: postgres://expenses:${POSTGRES_PASSWORD:-expenses-local-only}@db:5432/expenses?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  postgres_data:

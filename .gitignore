@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+coverage.out
+expensebot
+*.log
+artifacts/
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/

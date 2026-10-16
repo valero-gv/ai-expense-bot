@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { normalizeAmount, formatMoney, isValidDate, localToday, formatDate, buildQuery, parseUserID } from './app.js';
+
+test('money normalization preserves exact cents and accepts Russian decimal input', () => {
+  assert.equal(normalizeAmount(' 000350,5 '), '350.50');
+  assert.equal(normalizeAmount('0.01'), '0.01');
+  assert.equal(normalizeAmount('999999999.99'), '999999999.99');
+  assert.equal(normalizeAmount('500'), '500.00');
+  for (const value of ['', '0', '0.00', '-1', '1.234', '1e3', 'Infinity', '12 руб.', '1,000.50', '1000000000.00']) assert.equal(normalizeAmount(value), null, value);
+});
+
+test('money formatting never rounds a large server decimal', () => {
+  assert.equal(formatMoney('123456789123456789.01'), '123\u00a0456\u00a0789\u00a0123\u00a0456\u00a0789,01\u00a0₽');
+  assert.equal(formatMoney('0.00'), '0,00\u00a0₽');
+  assert.equal(formatMoney('0350.5'), '350,50\u00a0₽');
+  assert.equal(formatMoney('3.141'), '—');
+});
+
+test('dates validate real calendar dates and format without timezone shifts', () => {
+  assert.equal(isValidDate('2024-02-29'), true);
+  assert.equal(isValidDate('0001-01-01'), true);
+  for (const value of ['0000-01-01', '2025-02-29', '2026-04-31', '2026-13-01', '2026-1-2', 'tomorrow', '']) assert.equal(isValidDate(value), false, value);
+  assert.match(formatDate('2026-10-16'), /16.*2026/);
+  assert.equal(localToday(new Date(2026, 9, 16, 23, 59)), '2026-10-16');
+});
+
+test('filter parameters are encoded, bounded by fixed page size, and omit blanks', () => {
+  const params = new URLSearchParams(buildQuery({ user_id: '123', from: '2026-10-01', to: '', category: 'еда', q: ' кофе & чай ' }, 2));
+  assert.equal(params.get('q'), 'кофе & чай');
+  assert.equal(params.get('category'), 'еда');
+  assert.equal(params.get('page'), '2');
+  assert.equal(params.get('page_size'), '20');
+  assert.equal(params.has('to'), false);
+  assert.equal(params.get('user_id'), '123');
+});
+
+test('Telegram IDs reject imprecise or malformed values', () => {
+  assert.equal(parseUserID('123456789'), 123456789);
+  assert.equal(parseUserID(' 123 '), 123);
+  assert.equal(parseUserID('4503599627370495'), 4503599627370495);
+  for (const value of ['', '0', '-123', '01', '12.3', '1e3', '12 34', '4503599627370496', '9007199254740992']) assert.equal(parseUserID(value), null, value);
+});
