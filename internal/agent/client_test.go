@@ -61,6 +61,7 @@ func TestClientErrorsAndCancellation(t *testing.T) {
 		{"multiple choices", `{"choices":[{},{}]}`, 200},
 		{"truncated completion", `{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"partial"}}]}`, 200},
 		{"wrong role", `{"choices":[{"finish_reason":"stop","message":{"role":"system","content":"wrong"}}]}`, 200},
+		{"untrusted finish reason", `{"choices":[{"finish_reason":"private provider detail","message":{"role":"assistant","content":"wrong"}}]}`, 200},
 		{"oversized body", strings.Repeat("x", (1<<20)+1), 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,6 +100,20 @@ func TestClientErrorsAndCancellation(t *testing.T) {
 			}
 		}
 	})
+	t.Run("HTTP client timeout", func(t *testing.T) {
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(75 * time.Millisecond)
+			_, _ = io.WriteString(w, `{}`)
+		}))
+		defer s.Close()
+		httpClient := s.Client()
+		httpClient.Timeout = 10 * time.Millisecond
+		c := NewClient(s.URL, "model", "key", httpClient)
+		_, err := c.Complete(context.Background(), nil, nil)
+		if !errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), s.URL) {
+			t.Fatal("client timeout must retain its class without exposing the URL", err)
+		}
+	})
 }
 
 func TestClientFailureAfterMutationRollsBack(t *testing.T) {
@@ -117,7 +132,7 @@ func TestClientFailureAfterMutationRollsBack(t *testing.T) {
 	defer s.Close()
 	f := newStore()
 	e := NewEngine(f, NewClient(s.URL, "test-model", "test-key", s.Client()), config())
-	_, _, err := e.Process(context.Background(), 1, 101, "Анна", "кофе 350")
+	_, _, err := e.Process(context.Background(), 1, 101, "Anna", "coffee 350")
 	if err == nil || requests != 2 || len(f.rows) != 0 || len(f.processed) != 0 {
 		t.Fatal(err, requests, f.rows)
 	}

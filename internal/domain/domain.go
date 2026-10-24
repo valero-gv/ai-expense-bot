@@ -9,7 +9,41 @@ import (
 var ErrNotFound = errors.New("expense not found")
 var ErrInvalid = errors.New("invalid input")
 
-var Categories = []string{"еда", "транспорт", "жильё", "развлечения", "здоровье", "покупки", "другое"}
+// Category keys are persisted values from the original assignment. Keep them
+// stable when changing the language used by the interface.
+const (
+	Food          = "еда"
+	Transport     = "транспорт"
+	Housing       = "жильё"
+	Entertainment = "развлечения"
+	Health        = "здоровье"
+	Shopping      = "покупки"
+	Other         = "другое"
+)
+
+var Categories = []string{Food, Transport, Housing, Entertainment, Health, Shopping, Other}
+
+// CategoryLabel translates a stored key for display and preserves unknown keys.
+func CategoryLabel(key string) string {
+	switch key {
+	case Food:
+		return "Food"
+	case Transport:
+		return "Transport"
+	case Housing:
+		return "Housing"
+	case Entertainment:
+		return "Entertainment"
+	case Health:
+		return "Health"
+	case Shopping:
+		return "Shopping"
+	case Other:
+		return "Other"
+	default:
+		return key
+	}
+}
 
 type Expense struct {
 	ID        int64     `json:"id"`
@@ -64,6 +98,9 @@ type Expenses interface {
 	Delete(context.Context, int64) error
 }
 
+// Session binds every operation to one user and one transaction. Get and Last
+// lock returned expenses until the turn commits, protecting bot corrections
+// from overwriting a concurrent admin edit.
 type Session interface {
 	Expenses
 	// History is per Telegram user and is saved atomically with the update and its expenses.

@@ -1,182 +1,91 @@
-# ИИ-бот учёта расходов
+# AI Expense Bot
 
-Небольшое тестовое приложение: Telegram-агент понимает обычные сообщения и работает только с расходами автора; локальная веб-панель без авторизации управляет расходами всей семьи через REST API.
+A small Go service for tracking family expenses through natural-language Telegram messages. An LLM selects structured tools; the server validates and executes them against PostgreSQL. A local dashboard manages every family member's expenses through a REST API.
 
-Стек: Go 1.26.9, PostgreSQL 16, HTML/CSS/JavaScript. Одна внешняя Go-зависимость — pgx (драйвер PostgreSQL), у фронтенда нет сторонних зависимостей и этапа сборки. [Исходное задание](docs/original-task.md) сохранено целиком; [требования и решения](docs/decisions.md) зафиксированы отдельно.
+Built as a take-home assignment and a backend engineering example. [English specification](docs/task.en.md) · [Unmodified original](docs/original-task.md) · [Design decisions](docs/decisions.md) · [API](docs/api.md) · [Verification record](docs/verification.md).
 
-## Запуск с нуля
+## Stack and architecture
 
-Нужен Docker Desktop или Docker Engine с Compose v2. Из этой папки:
+Go 1.26.9, PostgreSQL 16, `net/http`, `pgx`, and an embedded HTML/CSS/JavaScript dashboard. The frontend has no build step or third-party JavaScript dependencies.
+
+```text
+Telegram long polling -> bounded LLM/tool loop -> user-scoped transaction -> PostgreSQL
+Browser                -> local REST API      -> administrative repository -> PostgreSQL
+```
+
+The bot supports creating, listing, totaling, updating and deleting expenses. English is the default language for the interface and server-generated replies. Russian input remains supported and has explicit multilingual regression coverage. Stored comments and names are user data and are not translated. Existing category keys remain unchanged; their display labels are English.
+
+## Quick start
+
+Requires Docker with Compose v2:
 
 ```sh
 cp .env.example .env
-# Для бота заполните TELEGRAM_BOT_TOKEN и LLM_API_KEY в .env.
 docker compose up --build
 ```
 
-Панель: <http://localhost:8080>. Проверка готовности: <http://localhost:8080/healthz>. БД запускается автоматически; приложение применяет миграции перед началом обслуживания. Без ключей панель и API полностью работают, Telegram polling отключён. Fake LLM существует только в тестах.
+Open <http://localhost:8080>. Without credentials, the dashboard and API work and Telegram polling is disabled. To enable the bot, set `TELEGRAM_BOT_TOKEN`, `LLM_API_KEY`, `LLM_BASE_URL` and `LLM_MODEL` in your local `.env`, then recreate the app with `docker compose up --build`. The provider must support OpenAI-compatible Chat Completions with strict function tools. Availability and model quality depend on the provider.
 
-Чтобы остановить приложение, нажмите Ctrl+C и выполните `docker compose down`. Данные сохраняются в именованном томе. `docker compose down -v` **удаляет все данные этого Compose-проекта**; используйте только для намеренного сброса тестовой БД.
-
-### Настройка Telegram и LLM
-
-1. Создайте отдельного бота у [@BotFather](https://t.me/BotFather) командой `/newbot`, скопируйте токен в `TELEGRAM_BOT_TOKEN`.
-2. Получите API key у выбранного провайдера. Для OpenAI: [управление API keys](https://platform.openai.com/api-keys). Поддерживается OpenAI-совместимый `/chat/completions` с function tools и `strict: true`. Пример модели в `.env.example` — `gpt-4.1-mini`; проверьте доступность у своего провайдера. Ключ API и доступ к модели настраиваются отдельно от подписки на чат.
-3. Заполните `LLM_API_KEY`, `LLM_BASE_URL` (обычно заканчивается `/v1`) и `LLM_MODEL`. Нужна модель, поддерживающая именно этот протокол; совместимость с произвольным провайдером не предполагается автоматически. См. [официальную схему function calling](https://developers.openai.com/api/docs/guides/function-calling).
-4. Укажите `APP_TIMEZONE`, например `Europe/Moscow` или `Europe/Chisinau`. `LLM_TIMEOUT=30s` ограничивает всю реплику, включая инструменты.
-5. После изменения `.env` перезапустите `docker compose up --build`. Напишите боту в личном чате. Для первого контакта Telegram может предложить Start; далее команды и кнопки для CRUD не нужны.
-
-Для локального совместимого провайдера из контейнера можно указать `LLM_BASE_URL=http://host.docker.internal:11434/v1`, его tool-capable модель и непустой placeholder `LLM_API_KEY=local`. HTTP разрешён только для локального провайдера; удалённый URL требует HTTPS. Это вариант конфигурации, а не проверенный здесь провайдер. На Linux Engine для host.docker.internal может понадобиться extra_hosts с host-gateway; пример напрямую подходит Docker Desktop.
-
-Запускайте один экземпляр polling для одного токена. Активный webhook нужно заранее отключить через настройки Telegram Bot API; приложение не изменяет его автоматически. Группы, фото, голосовые и edited_message не обрабатываются.
-
-### Бесплатный вариант для ручной проверки
-
-Можно использовать Groq на Free Plan с моделью `openai/gpt-oss-20b`. Создайте отдельный ключ в [Groq Console](https://console.groq.com/keys) и локально задайте:
-
-```dotenv
-LLM_BASE_URL=https://api.groq.com/openai/v1
-LLM_MODEL=openai/gpt-oss-20b
-LLM_TIMEOUT=60s
-LLM_API_KEY=ваш_ключ_Groq
-```
-
-Токен Telegram по-прежнему нужен в `TELEGRAM_BOT_TOKEN`. Не переходите на платный Developer Plan для этой проверки. Модель перечислена в [бесплатных лимитах Groq](https://console.groq.com/docs/rate-limits), а [официальный пример tool calling](https://console.groq.com/docs/reasoning#quick-start-with-tool-use) использует её с `strict: true`. Для строгого tool calling примеры аргументов в системной инструкции содержат все обязательные поля, включая null. Бесплатные лимиты и reasoning могут приводить к 429 или исчерпанию бюджета ответа; такие ошибки откатывают изменения. Результаты настоящих запросов зафиксированы в [протоколе проверки](docs/verification.md).
-
-Для передачи решения работодателю включайте исходники, тесты, README и `.env.example` с пустыми ключами. Личный `.env` не передавайте: проверяющий создаёт свой файл с собственными Telegram/LLM ключами и подходящей моделью. Автотесты запускаются без личных ключей. Выполненные и оставшиеся живые проверки перечислены в verification.md.
-
-### Переменные окружения
-
-| Переменная | Значение / назначение |
-|---|---|
-| `TELEGRAM_BOT_TOKEN` | Пусто → бот выключен, панель доступна |
-| `LLM_API_KEY` | Обязателен при включённом боте; только env |
-| `LLM_BASE_URL` | `https://api.openai.com/v1` |
-| `LLM_MODEL` | `gpt-4.1-mini`, можно заменить совместимой моделью |
-| `LLM_TIMEOUT` | `30s`, допустимо 1s–2m |
-| `APP_TIMEZONE` | `Europe/Moscow`, IANA timezone |
-| `PORT` | `8080`, только loopback-публикация |
-| `POSTGRES_PASSWORD` | Локальное тестовое значение; при замене используйте URL-safe символы |
-| `DATABASE_URL` | Compose задаёт автоматически; обязателен при запуске Go вне Docker |
-| `LISTEN_ADDR` | Вне Docker по умолчанию `127.0.0.1:8080`; в контейнере `:8080` |
-
-`.env` исключён из Git и контекста Docker build. Секреты не записываются в исходники и не выводятся приложением в логи. `docker compose config` может показать ваши env-значения — не публикуйте его вывод с настоящими ключами.
-
-## Проверка бота
-
-Отправьте по очереди:
+Example messages:
 
 ```text
-кофе 350
-последнее было не 350, а 450
-такси 1200 вчера
-сколько потратил на еду в этом месяце
-покажи траты за неделю
-удали такси
+coffee 350
+the latest expense was 450, not 350
+taxi 1200 yesterday
+how much did I spend on food this month?
+show expenses for this week
+delete taxi
 ```
 
-Категории: **еда, транспорт, жильё, развлечения, здоровье, покупки, другое**. Если «такси» подходит к нескольким расходам, бот покажет варианты и попросит ID. Ответьте, например, `удали #12`, `ID 12` или одним числом `12` в контексте уточнения. Для самостоятельной операции лучше писать `удали #12` / `измени #12 на 450`. Явное обозначение ID защищает от выбора записи моделью без участия человека.
+An ambiguous update or deletion asks for an explicit ID, such as `delete #12`. One expense can be changed or deleted per message. Amounts are in RUB. `APP_TIMEZONE` controls calendar dates; it defaults to `Europe/Moscow` to preserve the original behavior. `LLM_TIMEOUT` bounds an entire bot turn (default 30s, configurable from 1s to 2m).
 
-Второй Telegram-пользователь должен видеть только свои записи. Попытка `покажи расход #<чужой id>` или `удали #<чужой id>` даст «не найдена среди ваших расходов». Панель намеренно видит всех.
+**Local administrative access only.** The dashboard intentionally has no authentication, as required by the assignment. Anyone with access to the local port can read and change every user's expenses. The port binds to loopback, and PostgreSQL has no published port. Do not expose the app through a public port or tunnel without adding authentication and authorization. Host/origin checks reduce browser risks; they are not authentication.
 
-## Устройство и основные решения
+Keep credentials in `.env`; it is excluded from Git and the Docker build context. Do not share `docker compose config` output with real credentials. `docker compose down` preserves the database volume; adding `-v` deletes that volume.
 
-```text
-Telegram getUpdates → агент → ограниченные tools → scoped Session → PostgreSQL
-Браузер             → REST API                 → admin Store    → PostgreSQL
-```
+## Tests
 
-| Путь | Ответственность |
-|---|---|
-| `cmd/server` | Конфигурация, миграции, HTTP, polling, graceful shutdown |
-| `internal/domain` | Модель, целые копейки, валидация, календарные периоды |
-| `internal/store` | SQL, миграции, владельцы, транзакции, история и idempotency |
-| `internal/agent` | Настоящий HTTP LLM-клиент, строгие tool calls, bounded loop |
-| `internal/telegram` | Long polling, доверенный sender ID, ответы в личный чат |
-| `internal/api` | REST CRUD, фильтры, ошибки и локальные browser boundaries |
-| `internal/integration` | Совместная проверка агента, HTTP и настоящей БД |
-| `web` | Встроенная панель, точное отображение денег, JS unit-тесты |
-| `scripts/smoke_api.py` | Воспроизводимая проверка запущенного API |
-
-**Деньги.** Одна валюта RUB, поле валюты не добавляется к заданной модели. Go хранит `int64` копеек, SQL — `NUMERIC(11,2)`, JSON — строку `"350.00"`. Ввод `350`, `350.5`, `350,50` допустим как строка. Положительная сумма до `999999999.99`. Более двух знаков, экспонента, отрицательные суммы и JSON-число отклоняются; неявного округления нет. SQL SUM считает все подходящие записи без пагинации; итог может превышать максимум одного расхода. Представление итогов ограничено диапазоном int64 копеек: переполнение приводит к ошибке, а не потере точности.
-
-**Даты.** `spent_at` — `DATE` в `YYYY-MM-DD`; `created_at`/`updated_at` — `TIMESTAMPTZ`, в API RFC3339. Календарные вычисления происходят в `APP_TIMEZONE` через AddDate, с учётом переходов DST. «Неделя» — с понедельника по сегодня; «месяц» — с первого числа по сегодня. Период `last_7_days` включает сегодня и шесть предыдущих дней. Оба края фильтров включены. Форма панели предлагает сегодняшнюю дату по часовому поясу браузера; её можно изменить.
-
-**Изоляция.** Telegram `from.id` извлекается только из ответа Telegram API по HTTPS; нет публичного webhook endpoint. В личном чате `chat.id` обязан совпадать с `from.id`. Агенту не предоставляется аргумент user_id. Scoped Session подставляет доверенного владельца во все SQL: список, SUM, GET, Last, UPDATE, DELETE и CREATE. Подмена даже на уровне вызова репозитория не меняет scope. Все SQL-значения параметризованы; поиск комментария — буквальная подстрока, `%` и `_` не являются wildcard.
-
-**Агент.** Модель выбирает инструмент и извлекает параметры; сервер валидирует ту же JSON schema, типы, категории, деньги, даты и права. System/user/tool сообщения разделены. Модель знает текущую дату и timezone; расчёты сумм и периодов выполняет сервер. Результаты CRUD и выборок формируют ответы на сервере. Если модель не вызвала инструмент, возвращается уточнение, поэтому выдуманное «сохранено» не считается результатом.
-
-Поиск для изменения/удаления обязан содержаться в текущем тексте пользователя. Несколько совпадений сразу завершают реплику уточнением; модель не может сузить выбор комментариями из истории/списка. Явный ID также должен быть выбран текущим сообщением, а `latest` — сопровождаться ссылкой на последний расход. За сообщение изменяется/удаляется одна запись. «Последнее» — последняя **созданная** запись владельца, независимо от spent_at. Сохраняются до 12 простых сообщений истории на пользователя; контекст, ответы, число итераций (6), вызовов (12), входной текст и время ограничены. Список бота — 10 записей на странице с укороченными комментариями; полные комментарии доступны в панели.
-
-**Атомарность и повторы.** Одна Telegram-реплика, её изменения, история и сохранённый ответ коммитятся вместе. Advisory lock сериализует реплики владельца, уникальная пара (user_id, update_id) устраняет повторное исполнение. Одинаковые нормализованные mutating tool calls внутри реплики возвращают прежний результат даже с новым call ID; read tools всегда читают свежие данные. Ошибка/таймаут LLM, неверный поздний вызов или превышение лимита откатывают всю реплику. Ошибку можно повторить: частичного расхода в БД нет. Новое Telegram-сообщение с тем же текстом создаёт новый расход намеренно. Веб POST не имеет idempotency key; это ограничение административного API.
-
-**Цена простоты.** Транзакция и соединение БД остаются открытыми во время короткого ограниченного LLM-запроса; это приемлемо для семейного тестового сервиса. Polling последовательно обрабатывает сообщения. Для большой нагрузки понадобились бы иная организация обработки/outbox и ограничения частоты, но они здесь не добавлены. Возможен повтор текстового ответа после неопределённого результата sendMessage, расход при этом не дублируется. История и processed_updates не очищаются автоматически; это локальная демонстрационная база.
-
-## Панель без авторизации
-
-Авторизация отсутствует по заданию. Любой процесс/человек с доступом к локальному порту может прочитать и изменить расходы всех пользователей. Опубликован только `127.0.0.1:8080`, PostgreSQL доступен внутри Compose. Проверки Host/Origin/Fetch-Metadata, CSP и textContent уменьшают риск доступа с чужой веб-страницы, но не заменяют авторизацию. Не публикуйте порт/туннель в интернет; для внешнего размещения нужна отдельная модель доступа. Поддерживаются адреса localhost и loopback IP.
-
-Панель поддерживает создание, редактирование всех полей ввода, подтверждение удаления, подписи Telegram-пользователей и ручной ID, фильтры по владельцу/датам/категории/комментарию, серверный итог, пагинацию, состояния загрузки, ошибки и пустые результаты. Пользователь после удаления всех его расходов остаётся в списке членов семьи.
-
-## API
-
-Подробные форматы, ошибки и curl-примеры: [docs/api.md](docs/api.md).
-
-## Тесты
-
-Бесплатные тесты используют fake LLM/scripted HTTP и **настоящий PostgreSQL** для интеграций. Внешние Telegram/LLM ключи им не нужны.
+The default suite uses scripted HTTP model responses and real PostgreSQL for integration tests. It does not need Telegram or LLM credentials.
 
 ```sh
-# Нужен Go 1.26.9 (go.mod задаёт toolchain; возможна автоматическая загрузка).
-# Unit-тесты; DB-тесты явно SKIP, если TEST_DATABASE_URL не задан.
-go test ./...
-go vet ./...
+# Isolated Compose project; explicitly ignores the local .env.
+docker compose --env-file /dev/null -p expensebot-tests --profile test run --build --rm tests
+```
+
+This runs `go vet` and `go test -race` against a separate PostgreSQL service. Database tests fail instead of skipping when `TEST_REQUIRE_DATABASE=1` is set; the Compose test service and CI both set it.
+
+For local Go development, use Go 1.26.9 and a C compiler for the race detector:
+
+```sh
 gofmt -l cmd internal web/embed.go
+go vet ./...
+TEST_REQUIRE_DATABASE=1 TEST_DATABASE_URL='postgres://user:password@localhost:5432/expensebot_test?sslmode=disable' RUN_LIVE_LLM=0 go test -race -count=1 -timeout=5m ./...
 node --check web/app.js
 node --test web/app.test.js
-
-# Полный Go suite + race + PostgreSQL через Compose:
-docker compose --profile test run --build --rm tests
-
-# Проверка реально запущенного API (Python 3, без pip):
-python3 scripts/smoke_api.py
+python3 scripts/check_cyrillic.py
 ```
 
-Отдельный **добровольно включаемый** прогон настоящей модели использует ключи из локального `.env` и создаёт/удаляет изолированную схему PostgreSQL:
+Each database test creates and drops its own schema. Without `TEST_DATABASE_URL`, local database tests explicitly report `SKIP`; that is not a successful integration run. The external-provider test is intentionally skipped unless separately opted into. [Verification](docs/verification.md) distinguishes current automated checks, historical live tests and checks not performed.
 
-```sh
-# Только первый пример для проверки совместимости:
-python3 scripts/live_llm.py --case-limit 1
-# Все шесть фраз; минутные паузы помогают соблюдать бесплатные лимиты:
-python3 scripts/live_llm.py
-```
+The GitHub Actions workflow configures formatting, `go vet`, race-enabled tests with a PostgreSQL 16 service, dashboard tests and the localization audit. It requires no personal secrets. API smoke testing is available through `python3 scripts/smoke_api.py` against a disposable local instance.
 
-Запускатель не передаёт Telegram-токен в тестовый контейнер и скрывает ключи в выводе. `LLM_TIMEOUT` берётся из `.env` (по умолчанию 30s; для медленного провайдера можно задать 60s). `--no-build` позволяет использовать уже собранный tests image; после изменений кода запускайте без этого флага. Это проверка настоящего LLM/агента/БД; входящие сообщения и доставку в Telegram проверяйте отдельно через бота. Обычный `go test ./...` этот сетевой тест пропускает; явный запуск может потреблять платную квоту, если выбран платный провайдер.
+## Engineering decisions
 
-При локальном Go-запуске интеграций задайте `TEST_DATABASE_URL` на доступный PostgreSQL: тесты создают уникальную схему и удаляют только её. Нужны права CREATE SCHEMA; существующие таблицы не меняются. В Compose тесты используют внутреннюю БД. Контейнер tests устанавливает C toolchain для race; основной бинарник статический, работает non-root в scratch.
+- **Exact money:** integer minor units in Go, `NUMERIC(11,2)` in PostgreSQL and decimal strings in JSON. Floats and implicit rounding are rejected; database aggregates include every matching row, independently of pagination.
+- **Ownership at the boundary:** the owner comes from the trusted Telegram sender, not model arguments. Every bot query uses an immutable owner scope; administrative access is a separate repository path.
+- **Atomic turns and idempotency:** expense changes, conversation history and the saved reply commit together. A per-user PostgreSQL advisory lock serializes bot turns; duplicate update IDs return the committed reply. Repeated mutation tools within one turn reuse the result. A new Telegram message is a new intent, even if its text is identical.
+- **Concurrency:** a list's count and rows share one SQL statement snapshot. Scoped reads lock mutation targets before a bot builds a partial correction. Administrative `PUT` remains a full replacement; independent administrative edits use last-writer-wins semantics.
+- **Bounded work:** model iterations, tools, history, payloads and deadlines are limited. API database work has a 10s context budget, readiness checks 2s. Shutdown cancels polling, drains HTTP requests for up to 10s and closes overdue connections to cancel request contexts before releasing resources.
+- **Reliability and diagnostics:** transient Telegram failures retry; permanently undeliverable messages do not block later updates. Structured logs expose safe error categories and HTTP status codes, without tokens, provider bodies or user messages. `/healthz` checks HTTP/database readiness, not external Telegram or model availability.
 
-Проверяются: изоляция двух пользователей и чужой CRUD; SQL-фильтры/агрегаты; точные деньги; границы дней/недель/месяцев/DST; неоднозначное удаление и попытки модели выбрать ID/сузить запрос; повтор updates/tools; конкурентные повторы; rollback после записи; ошибки/таймаут LLM; строгие/некорректные аргументы; лимиты; отдельная история; API и browser boundaries. [Фактический протокол проверки](docs/verification.md) отделяет выполненные проверки от того, что требует настоящих ключей.
+## Trade-offs and limits
 
-## Демонстрация на 3–5 минут
+A bot turn holds a database connection and transaction during model requests. This keeps rollback and replay behavior simple, at the cost of lock duration and throughput. Polling is sequential and intended for one bot instance; a permanently failing transient operation can still delay later messages. Delivery can repeat after an uncertain network result, while the saved expense mutation is deduplicated.
 
-1. **0:00–0:30:** `docker compose up --build`, показать healthy приложение и панель.
-2. **0:30–1:30:** в Telegram «кофе 350» → «последнее было не 350, а 450» → «такси 1200 вчера». Обновить панель, показать даты и категории.
-3. **1:30–2:15:** «сколько потратил на еду в этом месяце», «покажи траты за неделю». Показать фильтры панели и совпадение серверного итога.
-4. **2:15–3:00:** второй Telegram-пользователь создаёт расход; первый пытается прочитать его ID. Панель видит обоих, бот — одного.
-5. **3:00–4:00:** создать второе такси, «удали такси» → уточнение → «удали #ID». В панели изменить расход и показать подтверждение удаления.
-6. **4:00–5:00:** показать `go test -race`/Compose tests и объяснить атомарность update, Money и границы агента. Без ключей честно показать панель/API и automated agent tests, без имитации реального Telegram.
+The project has been exercised as a local demonstration. Load capacity and production availability have not been measured. Administrative POST requests have no idempotency key; stored history and processed update IDs have no retention policy; the dashboard refreshes on navigation or user action.
 
-## Что обсудить на собеседовании
+Useful next steps would be authenticated family access, explicit edit-conflict handling, retention, operational metrics and durable delivery handling. A deployment's measured needs should guide any additional infrastructure.
 
-- **Почему Go без framework/ORM?** Здесь достаточно net/http и коротких параметризованных SQL. Меньше скрытого поведения, scope заметен в каждом запросе.
-- **Почему не float?** Десятичные деньги требуют точного представления; целые копейки + NUMERIC + строки JSON сохраняют 0.10 + 0.20 = 0.30.
-- **Где агентность?** Модель динамически выбирает structured tool и аргументы; сервер исполняет только ограниченный контракт. Это не regex-парсер, fake LLM не включён в рабочий режим.
-- **Как защищены данные?** Доверенный Telegram ID, неизменяемый scope репозитория и WHERE user_id при всех операциях. Prompt полезен для поведения, права проверяет код.
-- **Как работают «последнее» и неоднозначность?** Last по created_at/id внутри владельца; поиск должен дать ровно одну запись, иначе человек выбирает ID.
-- **Что при падении между сохранением и ответом?** Транзакция сохраняет результат update; повтор читает его. Ответ может повториться, расход — нет. При ошибке до коммита откатывается весь ход.
-- **Почему сеть внутри транзакции?** Простое атомарное решение для малого сервиса и фиксированного timeout; цена — удержание соединения/lock. Масштабирование потребует другого дизайна.
-- **Что улучшить для production?** Авторизация/доступ к семье, согласование валют/таймзон, outbox, retention, rate limiting, наблюдаемость, админ-idempotency и контроль конкурентного редактирования. Эти функции намеренно вне тестового объёма.
+## AI assistance
 
-## Использование ИИ
-
-ИИ-ассистент использован для проектирования, написания кода/тестов/документации и независимого анализа ошибок. Исправлены замечания по неоднозначным действиям модели, устаревшему кешу чтений, противоречивым ответам после ошибки и мобильной вёрстке. Реальные результаты команд и браузерных проверок записаны в verification.md. История коммитов и личное авторство не выдумываются. Живые проверки требуют собственных ключей; выполненные сценарии и их ограничения перечислены в verification.md.
+AI assistants were used for design, implementation, tests, documentation and independent review. The verification record documents automated checks and historical manual Telegram tests. See [localization exceptions](docs/localization.md) for the preserved original source, category compatibility and multilingual tests.

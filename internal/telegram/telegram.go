@@ -46,6 +46,29 @@ type Bot struct {
 	log     *slog.Logger
 }
 
+// apiError carries only a status code. Telegram bodies and token-bearing URLs
+// must never become errors or log fields.
+type apiError struct {
+	status int
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("Telegram API request failed (status %d)", e.status)
+}
+
+func permanentSendFailure(err error) bool {
+	var failure *apiError
+	if !errors.As(err, &failure) {
+		return false
+	}
+	switch failure.status {
+	case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound:
+		return true
+	default:
+		return false
+	}
+}
+
 func New(token string, client *http.Client, engine Processor, log *slog.Logger) *Bot {
 	if client == nil {
 		client = &http.Client{Timeout: 40 * time.Second}
@@ -69,7 +92,7 @@ func (b *Bot) Handle(ctx context.Context, u Update) error {
 	if strings.Fields(text)[0] == "/start" {
 		return b.call(ctx, "sendMessage", map[string]any{
 			"chat_id": m.Chat.ID,
-			"text":    "Здравствуйте! Я помогу учитывать ваши расходы. Напишите, например: «кофе 350», «такси 1200 вчера», «покажи траты за неделю», «последнее было не 350, а 450» или «удали такси».",
+			"text":    "Hello! I can help track your expenses. Try: \"coffee 350\", \"taxi 1200 yesterday\", \"show my expenses this week\", \"the last expense was 450, not 350\", or \"delete taxi\".",
 		}, nil)
 	}
 	label := strings.TrimSpace(m.From.FirstName + " " + m.From.LastName)
@@ -80,7 +103,7 @@ func (b *Bot) Handle(ctx context.Context, u Update) error {
 	if err != nil {
 		// Do not log provider bodies, user text, tokens or URL errors (Telegram URLs contain the token).
 		b.log.Warn("agent turn failed; transaction rolled back", "update_id", u.ID)
-		reply = "Не удалось обработать запрос. Изменения не сохранены. Попробуйте ещё раз."
+		reply = "I couldn't process your request. No changes were saved. Please try again."
 	}
 	return b.call(ctx, "sendMessage", map[string]any{"chat_id": m.Chat.ID, "text": truncate(reply, 4000)}, nil)
 }
@@ -104,10 +127,15 @@ func (b *Bot) Run(ctx context.Context) error {
 			if u.ID < offset {
 				continue
 			}
-			// On send failure do not acknowledge this update. A retry reads the saved DB reply.
+			// Retry temporary delivery failures using the saved reply. A permanently
+			// undeliverable message must not block every other chat's updates.
 			for ctx.Err() == nil {
 				err := b.Handle(ctx, u)
 				if err == nil {
+					break
+				}
+				if permanentSendFailure(err) {
+					b.log.Warn("Telegram reply cannot be delivered; skipping update", "update_id", u.ID, "error", err)
 					break
 				}
 				b.log.Warn("Telegram reply unavailable; retrying", "update_id", u.ID, "error", err)
@@ -148,13 +176,20 @@ func (b *Bot) call(ctx context.Context, method string, data any, out any) error 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Telegram returned HTTP %d", resp.StatusCode)
+		return &apiError{status: resp.StatusCode}
 	}
 	var envelope struct {
-		OK     bool            `json:"ok"`
-		Result json.RawMessage `json:"result"`
+		OK        bool            `json:"ok"`
+		Result    json.RawMessage `json:"result"`
+		ErrorCode int             `json:"error_code"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&envelope); err != nil || !envelope.OK {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&envelope); err != nil {
+		return fmt.Errorf("Telegram response failed")
+	}
+	if !envelope.OK {
+		if envelope.ErrorCode >= 400 && envelope.ErrorCode <= 599 {
+			return &apiError{status: envelope.ErrorCode}
+		}
 		return fmt.Errorf("Telegram response failed")
 	}
 	if out != nil {

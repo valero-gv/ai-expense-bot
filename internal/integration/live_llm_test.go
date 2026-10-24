@@ -50,7 +50,7 @@ func TestLiveLLMExpensePhrases(t *testing.T) {
 	ctx := context.Background()
 	const userID int64 = 4_000_000_000_001
 	const foreignID int64 = 4_000_000_000_002
-	foreign, err := repo.Create(ctx, domain.Input{UserID: foreignID, Amount: 9_876_543, Category: "еда", SpentAt: "2026-10-16", Comment: "изолированный чужой контроль"})
+	foreign, err := repo.Create(ctx, domain.Input{UserID: foreignID, Amount: 9_876_543, Category: domain.Food, SpentAt: "2026-10-16", Comment: "isolated ownership sentinel"})
 	if err != nil {
 		t.Fatal("create isolated ownership sentinel:", err)
 	}
@@ -70,26 +70,26 @@ func TestLiveLLMExpensePhrases(t *testing.T) {
 		check        func(*testing.T, domain.Page, string)
 	}
 	cases := []liveCase{
-		{"coffee", "кофе 350", 1, func(t *testing.T, page domain.Page, reply string) {
+		{"coffee", "coffee 350", 1, func(t *testing.T, page domain.Page, reply string) {
 			x := page.Items[0]
 			coffeeID = x.ID
-			if x.Amount != 35000 || x.Category != "еда" || x.SpentAt != "2026-10-16" || !strings.Contains(strings.ToLower(x.Comment), "кофе") || !strings.Contains(reply, "350.00") {
+			if x.Amount != 35000 || x.Category != domain.Food || x.SpentAt != "2026-10-16" || !strings.Contains(strings.ToLower(x.Comment), "coffee") || !strings.Contains(reply, "350.00") {
 				t.Fatalf("coffee facts do not match: expense=%+v reply=%q", x, reply)
 			}
 		}},
-		{"correction", "последнее было не 350, а 450", 1, func(t *testing.T, page domain.Page, reply string) {
+		{"correction", "the latest expense was 450, not 350", 1, func(t *testing.T, page domain.Page, reply string) {
 			x := page.Items[0]
-			if x.ID != coffeeID || x.Amount != 45000 || x.Category != "еда" || x.SpentAt != "2026-10-16" || !strings.Contains(reply, "450.00") {
+			if x.ID != coffeeID || x.Amount != 45000 || x.Category != domain.Food || x.SpentAt != "2026-10-16" || !strings.Contains(reply, "450.00") {
 				t.Fatalf("latest correction facts do not match: expense=%+v reply=%q", x, reply)
 			}
 		}},
-		{"taxi_yesterday", "такси 1200 вчера", 2, func(t *testing.T, page domain.Page, reply string) {
+		{"taxi_yesterday", "taxi 1200 yesterday", 2, func(t *testing.T, page domain.Page, reply string) {
 			for _, x := range page.Items {
 				if x.ID == coffeeID {
 					continue
 				}
 				taxiID = x.ID
-				if x.Amount != 120000 || x.Category != "транспорт" || x.SpentAt != "2026-10-15" || !strings.Contains(strings.ToLower(x.Comment), "такси") || !strings.Contains(reply, "1200.00") {
+				if x.Amount != 120000 || x.Category != domain.Transport || x.SpentAt != "2026-10-15" || !strings.Contains(strings.ToLower(x.Comment), "taxi") || !strings.Contains(reply, "1200.00") {
 					t.Fatalf("taxi facts do not match: expense=%+v reply=%q", x, reply)
 				}
 			}
@@ -97,12 +97,12 @@ func TestLiveLLMExpensePhrases(t *testing.T) {
 				t.Fatal("taxi was not created")
 			}
 		}},
-		{"monthly_food_sum", "сколько потратил на еду в этом месяце", 2, func(t *testing.T, page domain.Page, reply string) {
-			if !strings.Contains(reply, "Всего: 450.00 ₽. Трат: 1.") {
+		{"monthly_food_sum", "how much did I spend on food this month", 2, func(t *testing.T, page domain.Page, reply string) {
+			if !strings.Contains(reply, "Total: 450.00 RUB. Expenses: 1.") {
 				t.Fatalf("expected database-backed food total 450.00 for one owner: %q", reply)
 			}
 		}},
-		{"week_list", "покажи траты за неделю", 2, func(t *testing.T, page domain.Page, reply string) {
+		{"week_list", "show my expenses this week", 2, func(t *testing.T, page domain.Page, reply string) {
 			for _, id := range []int64{coffeeID, taxiID} {
 				if !strings.Contains(reply, fmt.Sprintf("#%d:", id)) {
 					t.Fatalf("week list omits owned expense #%d: %q", id, reply)
@@ -112,8 +112,8 @@ func TestLiveLLMExpensePhrases(t *testing.T) {
 				t.Fatalf("week list has incorrect amounts: %q", reply)
 			}
 		}},
-		{"delete_taxi", "удали такси", 1, func(t *testing.T, page domain.Page, reply string) {
-			if page.Items[0].ID != coffeeID || page.Items[0].Amount != 45000 || !strings.Contains(reply, fmt.Sprintf("Удалено #%d:", taxiID)) {
+		{"delete_taxi", "delete taxi", 1, func(t *testing.T, page domain.Page, reply string) {
+			if page.Items[0].ID != coffeeID || page.Items[0].Amount != 45000 || !strings.Contains(reply, fmt.Sprintf("Deleted #%d:", taxiID)) {
 				t.Fatalf("taxi deletion facts do not match: page=%+v reply=%q", page, reply)
 			}
 		}},

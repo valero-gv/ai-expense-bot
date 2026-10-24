@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"expensebot/internal/domain"
 )
@@ -136,7 +137,7 @@ func (e *clarification) Error() string { return e.reply }
 
 func (e *Engine) makeFilter(a filterArgs) (domain.Filter, error) {
 	if a.Period != "" && (a.From != "" || a.To != "") {
-		return domain.Filter{}, fmt.Errorf("use period or dates, not both")
+		return domain.Filter{}, fmt.Errorf("%w: use period or dates, not both", domain.ErrInvalid)
 	}
 	if a.Period != "" {
 		var err error
@@ -163,13 +164,13 @@ func (e *Engine) resolve(ctx context.Context, s domain.Session, sel selector, st
 	if sel.Latest {
 		n++
 	}
-	if n != 1 || sel.ID < 0 || len(sel.Query) > 200 {
-		return domain.Expense{}, fmt.Errorf("choose exactly one positive ID, search, or latest")
+	if n != 1 || sel.ID < 0 || utf8.RuneCountInString(sel.Query) > 200 || (sel.Query != "" && strings.TrimSpace(sel.Query) == "") {
+		return domain.Expense{}, fmt.Errorf("%w: choose exactly one positive ID, nonempty search, or latest", domain.ErrInvalid)
 	}
 	if sel.ID > 0 {
 		if !st.chosenIDs[sel.ID] {
 			st.ambiguous = true
-			st.problem = "Укажите ID нужной траты, например #123."
+			st.problem = "Please specify the expense ID, for example #123."
 			return domain.Expense{}, &clarification{st.problem}
 		}
 		return s.Get(ctx, sel.ID)
@@ -177,7 +178,7 @@ func (e *Engine) resolve(ctx context.Context, s domain.Session, sel selector, st
 	if sel.Latest {
 		if !st.latestChosen {
 			st.ambiguous = true
-			st.problem = "Укажите ID нужной траты или явно напишите «последняя трата»."
+			st.problem = "Please specify the expense ID or explicitly say \"latest expense\"."
 			return domain.Expense{}, &clarification{st.problem}
 		}
 		return s.Last(ctx)
@@ -186,7 +187,7 @@ func (e *Engine) resolve(ctx context.Context, s domain.Session, sel selector, st
 	// phrase from prior tool results would silently choose an ambiguous target.
 	if !strings.Contains(normalizedText(st.userText), normalizedText(sel.Query)) {
 		st.ambiguous = true
-		st.problem = "Уточните описание или укажите ID нужной траты, например #123."
+		st.problem = "Please refine the description or specify the expense ID, for example #123."
 		return domain.Expense{}, &clarification{st.problem}
 	}
 	f, err := e.makeFilter(filterArgs{Query: sel.Query, Page: 1})
@@ -203,15 +204,15 @@ func (e *Engine) resolve(ctx context.Context, s domain.Session, sel selector, st
 	if p.Total > 1 {
 		st.ambiguous = true
 		var b strings.Builder
-		b.WriteString("Нашлось несколько трат. Укажите ID нужной траты:\n")
+		b.WriteString("Several expenses match. Please specify the expense ID:\n")
 		for i, x := range p.Items {
 			if i == 5 {
 				break
 			}
-			fmt.Fprintf(&b, "#%d — %s ₽, %s, %s, %s\n", x.ID, x.Amount.String(), x.Category, x.SpentAt, preview(x.Comment, 80))
+			fmt.Fprintf(&b, "#%d — %s RUB, %s, %s, %s\n", x.ID, x.Amount.String(), domain.CategoryLabel(x.Category), x.SpentAt, preview(x.Comment, 80))
 		}
 		if p.Total > 5 {
-			b.WriteString("Показаны первые 5 совпадений; можно уточнить описание.")
+			b.WriteString("Showing the first 5 matches. You can refine the description.")
 		}
 		st.problem = strings.TrimSpace(b.String())
 		return domain.Expense{}, &clarification{st.problem}
@@ -219,11 +220,20 @@ func (e *Engine) resolve(ctx context.Context, s domain.Session, sel selector, st
 	if len(p.Items) != 1 {
 		return domain.Expense{}, fmt.Errorf("inconsistent expense query")
 	}
-	return p.Items[0], nil
+	// Scoped Get locks the row for the remainder of this transaction. Refresh
+	// fields after a concurrent admin edit so a partial patch cannot overwrite it.
+	x, err := s.Get(ctx, p.Items[0].ID)
+	if err != nil {
+		return domain.Expense{}, err
+	}
+	if !strings.Contains(strings.ToLower(x.Comment), strings.ToLower(sel.Query)) {
+		return domain.Expense{}, fmt.Errorf("%w: expense no longer matches the description", domain.ErrNotFound)
+	}
+	return x, nil
 }
 
 func expenseText(prefix string, x domain.Expense) string {
-	t := fmt.Sprintf("%s #%d: %s ₽ · %s · %s", prefix, x.ID, x.Amount.String(), x.Category, x.SpentAt)
+	t := fmt.Sprintf("%s #%d: %s RUB · %s · %s", prefix, x.ID, x.Amount.String(), domain.CategoryLabel(x.Category), x.SpentAt)
 	if x.Comment != "" {
 		t += " · " + preview(x.Comment, 80)
 	}
@@ -275,7 +285,7 @@ func (e *Engine) execute(ctx context.Context, s domain.Session, c ToolCall, st *
 		parseErr = validateArguments(c.Function.Name, c.Function.Arguments)
 	}
 	if parseErr != nil {
-		return toolError("Неверные аргументы инструмента. Уточните запрос.")
+		return toolError("Invalid tool arguments. Please clarify your request.")
 	}
 	normalized, _ := json.Marshal(arg)
 	key := c.Function.Name + ":" + string(normalized)
@@ -290,26 +300,26 @@ func (e *Engine) execute(ctx context.Context, s domain.Session, c ToolCall, st *
 	case *createArgs:
 		input := domain.Input{UserID: st.userID, Amount: a.Amount, Category: a.Category, SpentAt: a.SpentAt, Comment: a.Comment}
 		if err = domain.ValidateInput(input); err != nil {
-			return toolError("Проверьте положительную сумму, категорию и дату траты.")
+			return toolError("Check the positive amount, category, and expense date.")
 		}
 		var x domain.Expense
 		x, err = s.Create(ctx, input)
 		data = x
 		if err == nil {
 			st.mutated = true
-			answer = expenseText("Добавлено", x)
+			answer = expenseText("Added", x)
 		}
 	case *filterArgs:
 		var f domain.Filter
 		f, err = e.makeFilter(*a)
 		if err != nil {
-			return toolError("Проверьте период, категорию и фильтр.")
+			return toolError("Check the period, category, and filter.")
 		}
 		if c.Function.Name == "sum_expenses" {
 			var total domain.Summary
 			total, err = s.Summary(ctx, f)
 			data = total
-			answer = fmt.Sprintf("Всего: %s ₽. Трат: %d.", total.Amount.String(), total.Count)
+			answer = fmt.Sprintf("Total: %s RUB. Expenses: %d.", total.Amount.String(), total.Count)
 		} else {
 			var p domain.Page
 			p, err = s.List(ctx, f)
@@ -318,37 +328,37 @@ func (e *Engine) execute(ctx context.Context, s domain.Session, c ToolCall, st *
 			}
 			data = p
 			if len(p.Items) == 0 {
-				answer = "Трат по этому запросу нет."
+				answer = "No expenses match this request."
 			} else {
 				var lines []string
 				for _, x := range p.Items {
-					lines = append(lines, expenseText("Трата", x))
+					lines = append(lines, expenseText("Expense", x))
 				}
 				if int64(f.Page*f.PageSize) < p.Total {
-					lines = append(lines, fmt.Sprintf("Всего %d трат. Показана страница %d; можно запросить следующую.", p.Total, f.Page))
+					lines = append(lines, fmt.Sprintf("%d expenses in total. Showing page %d; ask for the next page.", p.Total, f.Page))
 				}
 				answer = strings.Join(lines, "\n")
 			}
 		}
 	case *getArgs:
 		if a.ID <= 0 {
-			return toolError("Укажите положительный ID траты.")
+			return toolError("Please specify a positive expense ID.")
 		}
 		var x domain.Expense
 		x, err = s.Get(ctx, a.ID)
 		data = x
-		answer = expenseText("Трата", x)
+		answer = expenseText("Expense", x)
 	case *latestArgs:
 		var x domain.Expense
 		x, err = s.Last(ctx)
 		data = x
-		answer = expenseText("Последняя трата", x)
+		answer = expenseText("Latest expense", x)
 	case *updateArgs:
 		if a.Amount == nil && a.Category == nil && a.SpentAt == nil && a.Comment == nil {
-			return toolError("Укажите, что изменить в трате.")
+			return toolError("Please specify what to change in the expense.")
 		}
 		if st.destructive {
-			return "", &clarification{"За один запрос можно изменить или удалить только одну трату. Укажите нужный ID."}
+			return "", &clarification{"You can update or delete only one expense per request. Please specify its ID."}
 		}
 		var x domain.Expense
 		x, err = e.resolve(ctx, s, a.Selector, st)
@@ -369,18 +379,18 @@ func (e *Engine) execute(ctx context.Context, s domain.Session, c ToolCall, st *
 			input.Comment = *a.Comment
 		}
 		if err = domain.ValidateInput(input); err != nil {
-			return toolError("Проверьте положительную сумму, категорию и дату траты.")
+			return toolError("Check the positive amount, category, and expense date.")
 		}
 		x, err = s.Update(ctx, x.ID, input)
 		data = x
 		if err == nil {
 			st.mutated = true
 			st.destructive = true
-			answer = expenseText("Изменено", x)
+			answer = expenseText("Updated", x)
 		}
 	case *deleteArgs:
 		if st.destructive {
-			return "", &clarification{"За один запрос можно изменить или удалить только одну трату. Укажите нужный ID."}
+			return "", &clarification{"You can update or delete only one expense per request. Please specify its ID."}
 		}
 		var x domain.Expense
 		x, err = e.resolve(ctx, s, a.Selector, st)
@@ -392,7 +402,7 @@ func (e *Engine) execute(ctx context.Context, s domain.Session, c ToolCall, st *
 		if err == nil {
 			st.mutated = true
 			st.destructive = true
-			answer = expenseText("Удалено", x)
+			answer = expenseText("Deleted", x)
 		}
 	}
 	if err != nil {
@@ -404,10 +414,10 @@ func (e *Engine) execute(ctx context.Context, s domain.Session, c ToolCall, st *
 			return toolError(clarify.reply)
 		}
 		if errors.Is(err, domain.ErrNotFound) {
-			return toolError("Трата не найдена среди ваших расходов.")
+			return toolError("Expense not found among your expenses.")
 		}
 		if errors.Is(err, domain.ErrInvalid) {
-			return toolError("Неверные параметры траты.")
+			return toolError("Invalid expense parameters.")
 		}
 		return "", fmt.Errorf("expense tool failed: %w", err)
 	}

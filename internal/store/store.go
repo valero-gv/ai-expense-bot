@@ -119,22 +119,33 @@ func (r *repository) List(ctx context.Context, filter domain.Filter) (domain.Pag
 		filter.PageSize = 20
 	}
 	page := domain.Page{Items: make([]domain.Expense, 0), Page: filter.Page, PageSize: filter.PageSize}
-	if err = r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM expenses"+where, args...).Scan(&page.Total); err != nil {
-		return domain.Page{}, fmt.Errorf("count expenses: %w", err)
-	}
 	args = append(args, filter.PageSize, int64(filter.Page-1)*int64(filter.PageSize))
-	query := "SELECT " + columns + " FROM expenses" + where + " ORDER BY spent_at DESC, id DESC LIMIT $" + strconv.Itoa(len(args)-1) + " OFFSET $" + strconv.Itoa(len(args))
+	// Count and rows share one PostgreSQL statement snapshot. The outer join
+	// retains the total even when the requested page contains no expenses.
+	// A zero ID marks that empty-page row; persisted expense IDs are positive.
+	query := fmt.Sprintf(`WITH filtered AS (SELECT * FROM expenses%s),
+		paged AS (SELECT * FROM filtered ORDER BY spent_at DESC, id DESC LIMIT $%d OFFSET $%d)
+		SELECT totals.total, COALESCE(p.id, 0), COALESCE(p.user_id, 0),
+			COALESCE(p.amount, 0), COALESCE(p.category, ''),
+			COALESCE(to_char(p.spent_at, 'YYYY-MM-DD'), ''), COALESCE(p.comment, ''),
+			COALESCE(p.created_at, 'epoch'::timestamptz), COALESCE(p.updated_at, 'epoch'::timestamptz)
+		FROM (SELECT COUNT(*) AS total FROM filtered) totals
+		LEFT JOIN paged p ON true
+		ORDER BY p.spent_at DESC, p.id DESC`, where, len(args)-1, len(args))
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return domain.Page{}, fmt.Errorf("list expenses: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		expense, scanErr := scanExpense(rows)
+		var expense domain.Expense
+		scanErr := rows.Scan(&page.Total, &expense.ID, &expense.UserID, &expense.Amount, &expense.Category, &expense.SpentAt, &expense.Comment, &expense.CreatedAt, &expense.UpdatedAt)
 		if scanErr != nil {
 			return domain.Page{}, fmt.Errorf("scan expense: %w", scanErr)
 		}
-		page.Items = append(page.Items, expense)
+		if expense.ID != 0 {
+			page.Items = append(page.Items, expense)
+		}
 	}
 	if err = rows.Err(); err != nil {
 		return domain.Page{}, fmt.Errorf("read expenses: %w", err)
@@ -160,6 +171,9 @@ func (r *repository) Get(ctx context.Context, id int64) (domain.Expense, error) 
 		return domain.Expense{}, domain.ErrNotFound
 	}
 	query, args := r.idQuery("SELECT "+columns+" FROM expenses", id)
+	if r.userID != nil {
+		query += " FOR UPDATE"
+	}
 	expense, err := scanExpense(r.db.QueryRowContext(ctx, query, args...))
 	if err != nil {
 		return domain.Expense{}, fmt.Errorf("get expense: %w", err)
@@ -175,6 +189,9 @@ func (r *repository) Last(ctx context.Context) (domain.Expense, error) {
 		args = append(args, *r.userID)
 	}
 	query += " ORDER BY created_at DESC, id DESC LIMIT 1"
+	if r.userID != nil {
+		query += " FOR UPDATE"
+	}
 	expense, err := scanExpense(r.db.QueryRowContext(ctx, query, args...))
 	if err != nil {
 		return domain.Expense{}, fmt.Errorf("last expense: %w", err)
@@ -323,14 +340,6 @@ func (s *Store) ProcessUpdate(ctx context.Context, updateID, userID int64, label
 	if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)", userID); err != nil {
 		return "", false, fmt.Errorf("lock Telegram user: %w", err)
 	}
-	if label == "" {
-		_, err = tx.ExecContext(ctx, "INSERT INTO users(id, label) VALUES($1, $2) ON CONFLICT(id) DO NOTHING", userID, "Telegram "+strconv.FormatInt(userID, 10))
-	} else {
-		_, err = tx.ExecContext(ctx, "INSERT INTO users(id, label) VALUES($1, $2) ON CONFLICT(id) DO UPDATE SET label = EXCLUDED.label", userID, label)
-	}
-	if err != nil {
-		return "", false, fmt.Errorf("save Telegram user: %w", err)
-	}
 	var reply string
 	err = tx.QueryRowContext(ctx, "SELECT reply FROM processed_updates WHERE user_id = $1 AND update_id = $2", userID, updateID).Scan(&reply)
 	if err == nil {
@@ -341,6 +350,14 @@ func (s *Store) ProcessUpdate(ctx context.Context, updateID, userID int64, label
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", false, fmt.Errorf("find processed update: %w", err)
+	}
+	if label == "" {
+		_, err = tx.ExecContext(ctx, "INSERT INTO users(id, label) VALUES($1, $2) ON CONFLICT(id) DO NOTHING", userID, "Telegram "+strconv.FormatInt(userID, 10))
+	} else {
+		_, err = tx.ExecContext(ctx, "INSERT INTO users(id, label) VALUES($1, $2) ON CONFLICT(id) DO UPDATE SET label = EXCLUDED.label", userID, label)
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("save Telegram user: %w", err)
 	}
 	turn := &session{repository: &repository{db: tx, userID: &userID}}
 	err = tx.QueryRowContext(ctx, "SELECT payload FROM conversation_history WHERE user_id = $1", userID).Scan(&turn.history)

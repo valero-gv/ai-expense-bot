@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,11 +14,16 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"expensebot/internal/domain"
 )
 
-const maxBodyBytes = 16 * 1024
+const (
+	maxBodyBytes   = 16 * 1024
+	requestTimeout = 10 * time.Second
+	healthTimeout  = 2 * time.Second
+)
 
 type server struct {
 	store domain.AdminStore
@@ -41,7 +47,27 @@ func New(store domain.AdminStore, webFS fs.FS) http.Handler {
 		writeError(w, http.StatusNotFound, "not_found", "Endpoint not found")
 	})
 	mux.Handle("/", staticFiles(webFS))
-	return secure(mux)
+	return secure(boundedRequests(mux))
+}
+
+func boundedRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var timeout time.Duration
+		switch {
+		case r.URL.Path == "/healthz":
+			timeout = healthTimeout
+		case r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/"):
+			timeout = requestTimeout
+		default:
+			next.ServeHTTP(w, r)
+			return
+		}
+		// The operation budget covers database/pool/lock waits. WriteTimeout alone
+		// only bounds writing the response and does not cancel request work.
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
@@ -49,6 +75,10 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.Ping(r.Context()); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			storeError(w, err)
+			return
+		}
 		writeError(w, http.StatusServiceUnavailable, "internal_error", "Database unavailable")
 		return
 	}
@@ -283,6 +313,8 @@ func storeError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "Expense not found")
 	case errors.Is(err, domain.ErrInvalid):
 		invalid(w, err.Error())
+	case errors.Is(err, context.DeadlineExceeded):
+		writeError(w, http.StatusServiceUnavailable, "internal_error", "Request timed out")
 	default:
 		// Database and driver errors may contain query or connection details.
 		writeError(w, http.StatusInternalServerError, "internal_error", "Unable to complete request")

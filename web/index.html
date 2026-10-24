@@ -1,104 +1,104 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#f4f5f1">
-    <title>Семейные расходы</title>
+    <title>Family expenses</title>
     <link rel="stylesheet" href="/style.css">
     <script type="module" src="/app.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#expenses">К списку расходов</a>
+    <a class="skip-link" href="#expenses">Skip to expenses</a>
     <div class="app-shell">
       <header class="page-header">
-        <a class="brand" href="/" aria-label="Семейные расходы, главная">
+        <a class="brand" href="/" aria-label="Family expenses, home">
           <span class="brand-icon" aria-hidden="true">↗</span>
-          <span>семейный бюджет<span class="brand-caption">Расходы под рукой</span></span>
+          <span>family budget<span class="brand-caption">Everyday spending, together</span></span>
         </a>
-        <div class="header-note"><span class="status-dot" aria-hidden="true"></span>Панель главы семьи</div>
+        <div class="header-note"><span class="status-dot" aria-hidden="true"></span>Family dashboard</div>
       </header>
 
       <main>
         <section class="intro" aria-labelledby="page-title">
           <div>
-            <p class="eyebrow">Общий взгляд на ежедневные траты</p>
-            <h1 id="page-title">Семейные расходы</h1>
-            <p class="intro-copy">Всё, что сохранили в боте, — в одном месте.</p>
+            <p class="eyebrow">A clear view of everyday spending</p>
+            <h1 id="page-title">Family expenses</h1>
+            <p class="intro-copy">Everything saved in the bot, together in one place.</p>
           </div>
-          <button type="button" id="add-expense" class="button primary"><span aria-hidden="true">＋</span> Добавить расход</button>
+          <button type="button" id="add-expense" class="button primary"><span aria-hidden="true">＋</span> Add expense</button>
         </section>
 
         <div class="summary-grid" aria-live="polite" aria-atomic="true">
           <section class="summary-card total-card" aria-labelledby="total-label">
-            <div class="summary-top"><h2 id="total-label">Всего потрачено</h2><span class="summary-mark" aria-hidden="true">↗</span></div>
+            <div class="summary-top"><h2 id="total-label">Total spent</h2><span class="summary-mark" aria-hidden="true">↗</span></div>
             <p class="total-amount" id="total-amount">—</p>
-            <p class="summary-caption" id="total-caption">По выбранным фильтрам</p>
+            <p class="summary-caption" id="total-caption">For the selected filters</p>
           </section>
           <section class="summary-card count-card" aria-labelledby="count-label">
-            <h2 id="count-label">Количество расходов</h2>
+            <h2 id="count-label">Number of expenses</h2>
             <p class="count-amount" id="total-count">—</p>
-            <p class="summary-caption">Каждая небольшая трата имеет значение</p>
+            <p class="summary-caption">Every small expense adds up</p>
           </section>
           <aside class="summary-card bot-card">
             <span class="bot-icon" aria-hidden="true">✦</span>
-            <div><h2>Просто напишите боту</h2><p>«Кофе 350» или «такси 1200 вчера» — бот сохранит сумму, категорию и дату.</p></div>
+            <div><h2>Just message the bot</h2><p>“Coffee 350” or “taxi 1200 yesterday” — the bot saves the amount, category and date.</p></div>
           </aside>
         </div>
 
         <section class="expenses-panel" id="expenses" aria-labelledby="expenses-title">
-          <div class="section-heading"><h2 id="expenses-title">История расходов</h2><p id="results-caption">Загружаем расходы…</p></div>
-          <form id="filters" class="filters" aria-label="Фильтры расходов">
-            <div class="field"><label for="filter-user">Член семьи</label><select id="filter-user" name="user_id"><option value="">Вся семья</option></select></div>
-            <div class="field"><label for="filter-from">С даты</label><input id="filter-from" name="from" type="date"></div>
-            <div class="field"><label for="filter-to">По дату</label><input id="filter-to" name="to" type="date"></div>
-            <div class="field"><label for="filter-category">Категория</label><select id="filter-category" name="category"><option value="">Все категории</option></select></div>
-            <div class="field search-field"><label for="filter-query">Комментарий</label><input id="filter-query" name="q" type="search" placeholder="Найти расход" maxlength="200"></div>
-            <div class="filter-actions"><button class="button secondary" type="submit">Применить</button><button class="text-button" id="reset-filters" type="button">Сбросить</button></div>
+          <div class="section-heading"><h2 id="expenses-title">Expense history</h2><p id="results-caption">Loading expenses…</p></div>
+          <form id="filters" class="filters" aria-label="Expense filters">
+            <div class="field"><label for="filter-user">Family member</label><select id="filter-user" name="user_id"><option value="">Whole family</option></select></div>
+            <div class="field"><label for="filter-from">From</label><input id="filter-from" name="from" type="date"></div>
+            <div class="field"><label for="filter-to">To</label><input id="filter-to" name="to" type="date"></div>
+            <div class="field"><label for="filter-category">Category</label><select id="filter-category" name="category"><option value="">All categories</option></select></div>
+            <div class="field search-field"><label for="filter-query">Comment</label><input id="filter-query" name="q" type="search" placeholder="Search expenses" maxlength="200"></div>
+            <div class="filter-actions"><button class="button secondary" type="submit">Apply</button><button class="text-button" id="reset-filters" type="button">Reset</button></div>
             <p class="form-error filter-error" id="filter-error" role="alert" hidden></p>
           </form>
 
-          <div class="alert error-alert" id="page-error" role="alert" hidden><span id="page-error-text"></span><button id="retry" type="button" class="text-button">Повторить</button></div>
+          <div class="alert error-alert" id="page-error" role="alert" hidden><span id="page-error-text"></span><button id="retry" type="button" class="text-button">Retry</button></div>
           <div class="table-scroll" id="table-container" aria-busy="true">
             <table>
-              <caption class="sr-only">Расходы членов семьи</caption>
-              <thead><tr><th scope="col">Расход</th><th scope="col">Член семьи</th><th scope="col">Дата</th><th scope="col" class="amount-cell">Сумма</th><th scope="col"><span class="sr-only">Действия</span></th></tr></thead>
+              <caption class="sr-only">Expenses for all family members</caption>
+              <thead><tr><th scope="col">Expense</th><th scope="col">Family member</th><th scope="col">Date</th><th scope="col" class="amount-cell">Amount</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
               <tbody id="expense-rows"></tbody>
             </table>
-            <div class="list-state" id="list-state" role="status"><span class="spinner" aria-hidden="true"></span><h3 id="state-title">Загружаем расходы</h3><p id="state-description">Собираем данные семьи.</p></div>
+            <div class="list-state" id="list-state" role="status"><span class="spinner" aria-hidden="true"></span><h3 id="state-title">Loading expenses</h3><p id="state-description">Fetching your family’s expenses.</p></div>
           </div>
-          <nav class="pagination" aria-label="Страницы расходов" hidden id="pagination"><p id="page-caption"></p><div><button type="button" class="button secondary" id="previous-page">← Назад</button><button type="button" class="button secondary" id="next-page">Далее →</button></div></nav>
+          <nav class="pagination" aria-label="Expense pages" hidden id="pagination"><p id="page-caption"></p><div><button type="button" class="button secondary" id="previous-page">← Previous</button><button type="button" class="button secondary" id="next-page">Next →</button></div></nav>
         </section>
-        <p class="local-notice"><span aria-hidden="true">ⓘ</span> Локальная панель без авторизации. Любой, у кого есть доступ к ней, может видеть и изменять расходы всей семьи.</p>
+        <p class="local-notice"><span aria-hidden="true">ⓘ</span> Local dashboard without sign-in. Anyone with access can view and change the whole family’s expenses.</p>
       </main>
-      <footer>Меньше рутины. Больше ясности.</footer>
+      <footer>Less admin. More clarity.</footer>
     </div>
 
     <dialog id="expense-dialog" aria-labelledby="dialog-title">
       <form id="expense-form" novalidate>
-        <div class="dialog-heading"><div><p class="eyebrow">Семейный бюджет</p><h2 id="dialog-title">Добавить расход</h2></div><button type="button" class="icon-button" data-close="expense-dialog" aria-label="Закрыть">×</button></div>
+        <div class="dialog-heading"><div><p class="eyebrow">Family budget</p><h2 id="dialog-title">Add expense</h2></div><button type="button" class="icon-button" data-close="expense-dialog" aria-label="Close">×</button></div>
         <div class="dialog-fields">
-          <div class="field full-width"><label for="expense-user">Telegram ID владельца <span aria-hidden="true">*</span></label><input id="expense-user" name="user_id" type="text" inputmode="numeric" list="family-users" required autocomplete="off" aria-describedby="user-hint"><datalist id="family-users"></datalist><p class="field-hint" id="user-hint">Выберите ID из списка или введите Telegram ID вручную.</p></div>
-          <div class="field"><label for="expense-amount">Сумма, ₽ <span aria-hidden="true">*</span></label><input id="expense-amount" name="amount" type="text" inputmode="decimal" placeholder="0,00" required autocomplete="off" maxlength="18"></div>
-          <div class="field"><label for="expense-date">Дата <span aria-hidden="true">*</span></label><input id="expense-date" name="spent_at" type="date" required></div>
-          <div class="field full-width"><label for="expense-category">Категория <span aria-hidden="true">*</span></label><select id="expense-category" name="category" required></select></div>
-          <div class="field full-width"><label for="expense-comment">Комментарий <span class="optional">необязательно</span></label><textarea id="expense-comment" name="comment" rows="3" maxlength="1000" placeholder="Например, кофе по дороге на работу"></textarea></div>
+          <div class="field full-width"><label for="expense-user">Owner’s Telegram ID <span aria-hidden="true">*</span></label><input id="expense-user" name="user_id" type="text" inputmode="numeric" list="family-users" required autocomplete="off" aria-describedby="user-hint"><datalist id="family-users"></datalist><p class="field-hint" id="user-hint">Choose an ID from the list or enter a Telegram ID manually.</p></div>
+          <div class="field"><label for="expense-amount">Amount, RUB <span aria-hidden="true">*</span></label><input id="expense-amount" name="amount" type="text" inputmode="decimal" placeholder="0.00" required autocomplete="off" maxlength="18"></div>
+          <div class="field"><label for="expense-date">Date <span aria-hidden="true">*</span></label><input id="expense-date" name="spent_at" type="date" required></div>
+          <div class="field full-width"><label for="expense-category">Category <span aria-hidden="true">*</span></label><select id="expense-category" name="category" required></select></div>
+          <div class="field full-width"><label for="expense-comment">Comment <span class="optional">optional</span></label><textarea id="expense-comment" name="comment" rows="3" maxlength="1000" placeholder="For example, coffee on the way to work"></textarea></div>
         </div>
         <p class="form-error" id="expense-error" role="alert" hidden></p>
-        <div class="dialog-actions"><button type="button" class="button secondary" data-close="expense-dialog">Отмена</button><button type="submit" class="button primary" id="save-expense">Сохранить расход</button></div>
+        <div class="dialog-actions"><button type="button" class="button secondary" data-close="expense-dialog">Cancel</button><button type="submit" class="button primary" id="save-expense">Save expense</button></div>
       </form>
     </dialog>
 
     <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-description">
       <form id="delete-form">
-        <div class="dialog-heading"><h2 id="delete-title">Удалить расход?</h2><button type="button" class="icon-button" data-close="delete-dialog" aria-label="Закрыть">×</button></div>
-        <p id="delete-description" class="delete-description"></p><p class="field-hint">Это действие нельзя отменить.</p>
+        <div class="dialog-heading"><h2 id="delete-title">Delete expense?</h2><button type="button" class="icon-button" data-close="delete-dialog" aria-label="Close">×</button></div>
+        <p id="delete-description" class="delete-description"></p><p class="field-hint">This cannot be undone.</p>
         <p class="form-error" id="delete-error" role="alert" hidden></p>
-        <div class="dialog-actions"><button type="button" class="button secondary" data-close="delete-dialog">Отмена</button><button type="submit" class="button danger" id="confirm-delete">Удалить</button></div>
+        <div class="dialog-actions"><button type="button" class="button secondary" data-close="delete-dialog">Cancel</button><button type="submit" class="button danger" id="confirm-delete">Delete</button></div>
       </form>
     </dialog>
     <div class="toast" id="toast" role="status" hidden></div>
 
-    <template id="expense-row-template"><tr><td><div class="expense-description"><span class="category-icon" aria-hidden="true"></span><div><p class="expense-comment"></p><p class="expense-category"></p></div></div></td><td><span class="owner-label"></span><span class="owner-id"></span></td><td class="expense-date"></td><td class="amount-cell expense-amount"></td><td class="row-actions"><button type="button" class="icon-button edit-expense" title="Изменить расход" aria-label="Изменить расход">✎</button><button type="button" class="icon-button delete-expense" title="Удалить расход" aria-label="Удалить расход">×</button></td></tr></template>
+    <template id="expense-row-template"><tr><td><div class="expense-description"><span class="category-icon" aria-hidden="true"></span><div><p class="expense-comment"></p><p class="expense-category"></p></div></div></td><td><span class="owner-label"></span><span class="owner-id"></span></td><td class="expense-date"></td><td class="amount-cell expense-amount"></td><td class="row-actions"><button type="button" class="icon-button edit-expense" title="Edit expense" aria-label="Edit expense">✎</button><button type="button" class="icon-button delete-expense" title="Delete expense" aria-label="Delete expense">×</button></td></tr></template>
   </body>
 </html>

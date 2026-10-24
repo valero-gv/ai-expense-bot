@@ -11,11 +11,12 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"expensebot/internal/domain"
 )
 
-const validBody = `{"user_id":42,"amount":"350.00","category":"еда","spent_at":"2026-10-16","comment":"кофе"}`
+const validBody = `{"user_id":42,"amount":"350.00","category":"` + domain.Food + `","spent_at":"2026-10-16","comment":"coffee"}`
 
 type fakeStore struct {
 	items  map[int64]domain.Expense
@@ -185,9 +186,9 @@ func TestInvalidJSONNeverReachesStore(t *testing.T) {
 		{"negative amount", strings.ReplaceAll(validBody, `"350.00"`, `"-1.00"`), 400},
 		{"zero owner", strings.ReplaceAll(validBody, `"user_id":42`, `"user_id":0`), 400},
 		{"fractional owner", strings.ReplaceAll(validBody, `"user_id":42`, `"user_id":42.5`), 400},
-		{"invalid category", strings.ReplaceAll(validBody, `"еда"`, `"invalid"`), 400},
+		{"invalid category", strings.ReplaceAll(validBody, `"`+domain.Food+`"`, `"invalid"`), 400},
 		{"impossible date", strings.ReplaceAll(validBody, `2026-10-16`, `2026-02-30`), 400},
-		{"oversized", strings.ReplaceAll(validBody, `кофе`, strings.Repeat("a", maxBodyBytes)), 413},
+		{"oversized", strings.ReplaceAll(validBody, `coffee`, strings.Repeat("a", maxBodyBytes)), 413},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -219,12 +220,12 @@ func TestFilterParsingAndEmptyLists(t *testing.T) {
 	if s.filter.Page != 1 || s.filter.PageSize != 20 {
 		t.Fatalf("defaults: %#v", s.filter)
 	}
-	query := url.Values{"user_id": {"42"}, "from": {"2026-10-01"}, "to": {"2026-10-16"}, "category": {"еда"}, "q": {"кофе с молоком"}, "page": {"2"}, "page_size": {"50"}}.Encode()
+	query := url.Values{"user_id": {"42"}, "from": {"2026-10-01"}, "to": {"2026-10-16"}, "category": {domain.Food}, "q": {"coffee with milk"}, "page": {"2"}, "page_size": {"50"}}.Encode()
 	for _, endpoint := range []string{"/api/expenses", "/api/summary"} {
 		w = request(h, http.MethodGet, endpoint+"?"+query, "")
 		assertStatus(t, w, 200)
 		f := s.filter
-		if f.UserID == nil || *f.UserID != 42 || f.From != "2026-10-01" || f.To != "2026-10-16" || f.Category != "еда" || f.Query != "кофе с молоком" || f.Page != 2 || f.PageSize != 50 {
+		if f.UserID == nil || *f.UserID != 42 || f.From != "2026-10-01" || f.To != "2026-10-16" || f.Category != domain.Food || f.Query != "coffee with milk" || f.Page != 2 || f.PageSize != 50 {
 			t.Fatalf("filter not forwarded: %#v", f)
 		}
 	}
@@ -233,10 +234,10 @@ func TestFilterParsingAndEmptyLists(t *testing.T) {
 	if strings.TrimSpace(w.Body.String()) != `{"items":[]}` {
 		t.Fatalf("empty users: %s", w.Body.String())
 	}
-	s.users = []domain.User{{ID: 42, Label: "Анна"}}
+	s.users = []domain.User{{ID: 42, Label: "Anna"}}
 	w = request(h, http.MethodGet, "/api/users", "")
 	assertStatus(t, w, 200)
-	if !strings.Contains(w.Body.String(), `"label":"Анна"`) {
+	if !strings.Contains(w.Body.String(), `"label":"Anna"`) {
 		t.Fatalf("user label lost: %s", w.Body.String())
 	}
 	w = request(h, http.MethodGet, "/api/categories", "")
@@ -247,6 +248,134 @@ func TestFilterParsingAndEmptyLists(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || len(result.Items) != 7 {
 		t.Fatalf("categories: %s, %v", w.Body.String(), err)
 	}
+	for i, category := range domain.Categories {
+		if result.Items[i] != category {
+			t.Fatalf("stored category key changed: got %q, want %q", result.Items[i], category)
+		}
+	}
+}
+
+type cancelAwareStore struct {
+	*fakeStore
+	entered chan context.Context
+}
+
+func (s *cancelAwareStore) List(ctx context.Context, _ domain.Filter) (domain.Page, error) {
+	s.entered <- ctx
+	<-ctx.Done()
+	return domain.Page{}, ctx.Err()
+}
+
+func (s *cancelAwareStore) Create(ctx context.Context, _ domain.Input) (domain.Expense, error) {
+	s.entered <- ctx
+	<-ctx.Done()
+	return domain.Expense{}, ctx.Err()
+}
+
+func TestRequestCancellationReachesStore(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			store := &cancelAwareStore{fakeStore: &fakeStore{}, entered: make(chan context.Context, 1)}
+			body := ""
+			if method == http.MethodPost {
+				body = validBody
+			}
+			r := httptest.NewRequest(method, "http://localhost:8080/api/expenses", strings.NewReader(body)).WithContext(ctx)
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() {
+				New(store, nil).ServeHTTP(w, r)
+				close(done)
+			}()
+			select {
+			case received := <-store.entered:
+				if deadline, ok := received.Deadline(); !ok || time.Until(deadline) > requestTimeout {
+					t.Fatal("store did not receive the bounded request context")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("store was not called")
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("canceled request left the handler blocked")
+			}
+			assertStatus(t, w, http.StatusInternalServerError)
+			assertCode(t, w, "internal_error")
+			if strings.Contains(w.Body.String(), "context canceled") {
+				t.Fatal("internal cancellation details leaked")
+			}
+		})
+	}
+}
+
+type deadlineStore struct {
+	*fakeStore
+	inspect func(context.Context) error
+}
+
+func (s *deadlineStore) List(ctx context.Context, _ domain.Filter) (domain.Page, error) {
+	return domain.Page{}, s.inspect(ctx)
+}
+
+func (s *deadlineStore) Ping(ctx context.Context) error { return s.inspect(ctx) }
+
+func TestDatabaseOperationsHaveServerDeadlines(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		budget time.Duration
+	}{
+		{"/api/expenses", 10 * time.Second},
+		{"/healthz", 2 * time.Second},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			started := time.Now()
+			called := false
+			store := &deadlineStore{fakeStore: &fakeStore{}, inspect: func(ctx context.Context) error {
+				called = true
+				deadline, ok := ctx.Deadline()
+				if !ok || deadline.After(time.Now().Add(tc.budget)) || deadline.Before(started.Add(tc.budget-time.Second)) {
+					t.Errorf("database operation has unexpected deadline: %v, present=%t", deadline, ok)
+				}
+				return fmt.Errorf("private database detail: %w", context.DeadlineExceeded)
+			}}
+			w := request(New(store, nil), http.MethodGet, tc.path, "")
+			assertStatus(t, w, http.StatusServiceUnavailable)
+			assertCode(t, w, "internal_error")
+			if !called || !strings.Contains(w.Body.String(), `"message":"Request timed out"`) || strings.Contains(w.Body.String(), "private") {
+				t.Fatalf("unsafe or missing timeout response: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestEarlierRequestDeadlineIsPreserved(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	parentDeadline, _ := ctx.Deadline()
+	store := &deadlineStore{fakeStore: &fakeStore{}, inspect: func(received context.Context) error {
+		deadline, ok := received.Deadline()
+		if !ok || !deadline.Equal(parentDeadline) {
+			t.Errorf("shorter parent deadline was replaced: %v", deadline)
+		}
+		<-received.Done()
+		return received.Err()
+	}}
+	r := httptest.NewRequest(http.MethodGet, "http://localhost:8080/api/expenses", nil).WithContext(ctx)
+	w := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { New(store, nil).ServeHTTP(w, r); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("request ignored its earlier deadline")
+	}
+	assertStatus(t, w, http.StatusServiceUnavailable)
+	assertCode(t, w, "internal_error")
 }
 
 func TestInvalidFiltersAndIDsNeverReachStore(t *testing.T) {

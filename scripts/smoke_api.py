@@ -7,6 +7,9 @@ import urllib.parse
 import urllib.request
 
 BASE = os.environ.get("BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+# Legacy Russian category keys are stored API values, not user-facing demo text.
+LEGACY_CATEGORY_FOOD = "еда"
+LEGACY_CATEGORY_TRANSPORT = "транспорт"
 
 
 def request(method, path, body=None, expected=200):
@@ -29,17 +32,17 @@ def main():
         assert len(request("GET", "/api/categories")["items"]) == 7
         for amount in ("0.10", "0.20"):
             row = request("POST", "/api/expenses", {
-                "user_id": 900003, "amount": amount, "category": "еда",
+                "user_id": 900003, "amount": amount, "category": LEGACY_CATEGORY_FOOD,
                 "spent_at": "2026-10-16", "comment": "api-smoke-exact-money",
             }, 201)
             created.append(row["id"])
-        query = urllib.parse.urlencode({"user_id": 900003, "category": "еда", "from": "2026-10-16", "to": "2026-10-16", "q": "api-smoke-exact-money"})
+        query = urllib.parse.urlencode({"user_id": 900003, "category": LEGACY_CATEGORY_FOOD, "from": "2026-10-16", "to": "2026-10-16", "q": "api-smoke-exact-money"})
         rows = request("GET", "/api/expenses?" + query)
         assert rows["total"] == 2
         assert rows["items"][0]["id"] == created[-1]
         assert request("GET", "/api/summary?" + query) == {"amount": "0.30", "count": 2}
         updated = request("PUT", f"/api/expenses/{created[0]}", {
-            "user_id": 900003, "amount": "450.25", "category": "транспорт",
+            "user_id": 900003, "amount": "450.25", "category": LEGACY_CATEGORY_TRANSPORT,
             "spent_at": "2026-10-15", "comment": "api-smoke-edited",
         })
         assert updated["amount"] == "450.25"

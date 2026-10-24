@@ -26,6 +26,9 @@ func testStore(t *testing.T) (*store.Store, *sql.DB) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
+		if os.Getenv("TEST_REQUIRE_DATABASE") == "1" {
+			t.Fatal("TEST_DATABASE_URL is required when TEST_REQUIRE_DATABASE=1")
+		}
 		t.Skip("TEST_DATABASE_URL is unset: PostgreSQL integration test")
 	}
 	config, err := pgx.ParseConfig(dsn)
@@ -123,14 +126,14 @@ func TestMigrationRepeatedAndExactSchema(t *testing.T) {
 func TestBotScopeCoversEveryOperationAndAdminCanManageAllUsers(t *testing.T) {
 	s, _ := testStore(t)
 	ctx := context.Background()
-	first := create(t, s, input(111, 35000, "еда", "2026-10-16", "кофе"))
-	foreign := create(t, s, input(222, 120000, "транспорт", "2026-10-16", "такси"))
+	first := create(t, s, input(111, 35000, domain.Food, "2026-10-16", "coffee"))
+	foreign := create(t, s, input(222, 120000, domain.Transport, "2026-10-16", "taxi"))
 	otherID := int64(222)
-	_, _, err := s.ProcessUpdate(ctx, 10, 111, "Анна", func(ctx context.Context, turn domain.Session) (string, error) {
+	_, _, err := s.ProcessUpdate(ctx, 10, 111, "Anna", func(ctx context.Context, turn domain.Session) (string, error) {
 		if _, err := turn.Get(ctx, foreign.ID); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("foreign Get: %v", err)
 		}
-		if _, err := turn.Update(ctx, foreign.ID, input(222, 1, "другое", "2026-10-16", "чужая")); !errors.Is(err, domain.ErrNotFound) {
+		if _, err := turn.Update(ctx, foreign.ID, input(222, 1, domain.Other, "2026-10-16", "foreign expense")); !errors.Is(err, domain.ErrNotFound) {
 			t.Errorf("foreign Update: %v", err)
 		}
 		if err := turn.Delete(ctx, foreign.ID); !errors.Is(err, domain.ErrNotFound) {
@@ -157,21 +160,21 @@ func TestBotScopeCoversEveryOperationAndAdminCanManageAllUsers(t *testing.T) {
 		if last.ID != first.ID {
 			t.Errorf("scoped Last=%d, want %d", last.ID, first.ID)
 		}
-		created, err := turn.Create(ctx, input(222, 45000, "еда", "2026-10-15", "server-scoped"))
+		created, err := turn.Create(ctx, input(222, 45000, domain.Food, "2026-10-15", "server-scoped"))
 		if err != nil {
 			return "", err
 		}
 		if created.UserID != 111 {
 			t.Errorf("create allowed owner %d", created.UserID)
 		}
-		updated, err := turn.Update(ctx, first.ID, input(222, 45000, "еда", "2026-10-16", "исправлено"))
+		updated, err := turn.Update(ctx, first.ID, input(222, 45000, domain.Food, "2026-10-16", "corrected"))
 		if err != nil {
 			return "", err
 		}
 		if updated.UserID != 111 {
 			t.Errorf("update allowed owner %d", updated.UserID)
 		}
-		return "готово", nil
+		return "done", nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +190,7 @@ func TestBotScopeCoversEveryOperationAndAdminCanManageAllUsers(t *testing.T) {
 	if err != nil || all.Count != 3 || all.Amount != 210000 {
 		t.Fatalf("admin Summary=%+v err=%v", all, err)
 	}
-	reassigned, err := s.Update(ctx, foreign.ID, input(333, 10000, "другое", "2026-10-01", "admin reassigned"))
+	reassigned, err := s.Update(ctx, foreign.ID, input(333, 10000, domain.Other, "2026-10-01", "admin reassigned"))
 	if err != nil || reassigned.UserID != 333 {
 		t.Fatalf("admin Update=%+v err=%v", reassigned, err)
 	}
@@ -205,7 +208,7 @@ func TestBotScopeCoversEveryOperationAndAdminCanManageAllUsers(t *testing.T) {
 	for _, user := range users {
 		labels[user.ID] = user.Label
 	}
-	if labels[111] != "Анна" || labels[222] == "" || labels[333] == "" {
+	if labels[111] != "Anna" || labels[222] == "" || labels[333] == "" {
 		t.Fatalf("user labels=%v", labels)
 	}
 	_, _, err = s.ProcessUpdate(ctx, 11, 111, "", func(ctx context.Context, turn domain.Session) (string, error) { return "ok", nil })
@@ -217,7 +220,7 @@ func TestBotScopeCoversEveryOperationAndAdminCanManageAllUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, user := range users {
-		if user.ID == 111 && user.Label != "Анна" {
+		if user.ID == 111 && user.Label != "Anna" {
 			t.Fatalf("empty label replaced name: %+v", user)
 		}
 	}
@@ -227,9 +230,9 @@ func TestUpdateIdempotencyHistoryIsolationAndCompleteRollback(t *testing.T) {
 	s, db := testStore(t)
 	ctx := context.Background()
 	var first domain.Expense
-	_, duplicate, err := s.ProcessUpdate(ctx, 1, 101, "Первый", func(ctx context.Context, turn domain.Session) (string, error) {
+	_, duplicate, err := s.ProcessUpdate(ctx, 1, 101, "First", func(ctx context.Context, turn domain.Session) (string, error) {
 		var err error
-		first, err = turn.Create(ctx, input(999, 10, "еда", "2026-10-16", "original"))
+		first, err = turn.Create(ctx, input(999, 10, domain.Food, "2026-10-16", "original"))
 		if err != nil {
 			return "", err
 		}
@@ -248,7 +251,7 @@ func TestUpdateIdempotencyHistoryIsolationAndCompleteRollback(t *testing.T) {
 	if err != nil || !duplicate || answer != "saved answer" {
 		t.Fatalf("duplicate answer=%q duplicate=%v err=%v", answer, duplicate, err)
 	}
-	_, duplicate, err = s.ProcessUpdate(ctx, 1, 202, "Второй", func(ctx context.Context, turn domain.Session) (string, error) {
+	_, duplicate, err = s.ProcessUpdate(ctx, 1, 202, "Second", func(ctx context.Context, turn domain.Session) (string, error) {
 		if len(turn.History()) != 0 {
 			t.Errorf("history leaked: %q", turn.History())
 		}
@@ -267,10 +270,10 @@ func TestUpdateIdempotencyHistoryIsolationAndCompleteRollback(t *testing.T) {
 		if string(turn.History()) != "original history" {
 			t.Error("History exposed mutable backing array")
 		}
-		if _, err := turn.Create(ctx, input(101, 20, "еда", "2026-10-16", "must roll back")); err != nil {
+		if _, err := turn.Create(ctx, input(101, 20, domain.Food, "2026-10-16", "must roll back")); err != nil {
 			return "", err
 		}
-		if _, err := turn.Update(ctx, first.ID, input(101, 99, "другое", "2026-10-15", "must roll back")); err != nil {
+		if _, err := turn.Update(ctx, first.ID, input(101, 99, domain.Other, "2026-10-15", "must roll back")); err != nil {
 			return "", err
 		}
 		if err := turn.Delete(ctx, first.ID); err != nil {
@@ -300,7 +303,7 @@ func TestUpdateIdempotencyHistoryIsolationAndCompleteRollback(t *testing.T) {
 		if string(turn.History()) != "original history" {
 			t.Errorf("history survived rollback: %q", turn.History())
 		}
-		_, err := turn.Create(ctx, input(101, 20, "еда", "2026-10-16", "retry once"))
+		_, err := turn.Create(ctx, input(101, 20, domain.Food, "2026-10-16", "retry once"))
 		if err != nil {
 			return "", err
 		}
@@ -323,7 +326,7 @@ func TestUpdateIdempotencyHistoryIsolationAndCompleteRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, user := range users {
-		if user.ID == 101 && user.Label != "Первый" {
+		if user.ID == 101 && user.Label != "First" {
 			t.Fatalf("user label survived rollback: %+v", user)
 		}
 	}
@@ -332,13 +335,13 @@ func TestUpdateIdempotencyHistoryIsolationAndCompleteRollback(t *testing.T) {
 func TestFiltersPaginationStableLastAndExactAggregates(t *testing.T) {
 	s, db := testStore(t)
 	ctx := context.Background()
-	first := create(t, s, input(11, 10, "еда", "2026-10-01", `Кофе 100%_ок\чек`))
-	second := create(t, s, input(11, 20, "еда", "2026-10-01", `Кофе 100ABCокXчек`))
-	third := create(t, s, input(22, 12345, "транспорт", "2026-10-03", "такси"))
-	fourth := create(t, s, input(11, 99999999999, "покупки", "2026-09-01", "большая покупка"))
-	fifth := create(t, s, input(11, 99999999999, "покупки", "2026-09-01", "ещё покупка"))
+	first := create(t, s, input(11, 10, domain.Food, "2026-10-01", `Coffee 100%_ok\receipt`))
+	second := create(t, s, input(11, 20, domain.Food, "2026-10-01", `Coffee 100ABCokXreceipt`))
+	third := create(t, s, input(22, 12345, domain.Transport, "2026-10-03", "taxi"))
+	fourth := create(t, s, input(11, 99999999999, domain.Shopping, "2026-09-01", "large purchase"))
+	fifth := create(t, s, input(11, 99999999999, domain.Shopping, "2026-09-01", "another purchase"))
 	owner := int64(11)
-	filter := domain.Filter{UserID: &owner, From: "2026-10-01", To: "2026-10-01", Category: "еда"}
+	filter := domain.Filter{UserID: &owner, From: "2026-10-01", To: "2026-10-01", Category: domain.Food}
 	page, err := s.List(ctx, filter)
 	if err != nil || page.Total != 2 || len(page.Items) != 2 || page.Items[0].ID != second.ID || page.Items[1].ID != first.ID {
 		t.Fatalf("inclusive filters/sorting: %+v %v", page, err)
@@ -347,7 +350,7 @@ func TestFiltersPaginationStableLastAndExactAggregates(t *testing.T) {
 	if err != nil || summary.Amount != 30 || summary.Count != 2 {
 		t.Fatalf("0.10+0.20 not exact: %+v %v", summary, err)
 	}
-	filter.Query = `100%_ок\чек`
+	filter.Query = `100%_ok\receipt`
 	page, err = s.List(ctx, filter)
 	if err != nil || page.Total != 1 || page.Items[0].ID != first.ID {
 		t.Fatalf("LIKE wildcards/backslash treated as pattern: %+v %v", page, err)
@@ -365,7 +368,7 @@ func TestFiltersPaginationStableLastAndExactAggregates(t *testing.T) {
 	if err != nil || page.Total != 5 || len(page.Items) != 0 || page.Items == nil {
 		t.Fatalf("empty page should retain total/non-nil array: %+v %v", page, err)
 	}
-	summary, err = s.Summary(ctx, domain.Filter{UserID: &owner, Category: "покупки"})
+	summary, err = s.Summary(ctx, domain.Filter{UserID: &owner, Category: domain.Shopping})
 	if err != nil || summary.Amount != 199999999998 || summary.Count != 2 {
 		t.Fatalf("aggregate larger than per-expense bound: %+v %v", summary, err)
 	}
@@ -376,7 +379,7 @@ func TestFiltersPaginationStableLastAndExactAggregates(t *testing.T) {
 	if err != nil || last.ID != fifth.ID {
 		t.Fatalf("created_at tie requires id order: %+v %v", last, err)
 	}
-	if _, err = s.Update(ctx, first.ID, input(11, 11, "еда", "2026-10-16", "updated but not latest created")); err != nil {
+	if _, err = s.Update(ctx, first.ID, input(11, 11, domain.Food, "2026-10-16", "updated but not latest created")); err != nil {
 		t.Fatal(err)
 	}
 	last, err = s.Last(ctx)
@@ -456,7 +459,7 @@ func TestConcurrentUpdatesSerializePerUserAndDeduplicate(t *testing.T) {
 			defer workers.Done()
 			reply, duplicate, err := s.ProcessUpdate(ctx, 55, 1003, "three", func(ctx context.Context, turn domain.Session) (string, error) {
 				calls.Add(1)
-				_, err := turn.Create(ctx, input(1003, 10, "еда", "2026-10-16", "exactly once"))
+				_, err := turn.Create(ctx, input(1003, 10, domain.Food, "2026-10-16", "exactly once"))
 				return "same answer", err
 			})
 			if duplicate {

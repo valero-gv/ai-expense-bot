@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeProcessor struct {
@@ -27,7 +28,7 @@ func (f *fakeProcessor) Process(_ context.Context, u, id int64, label, text stri
 	f.user = id
 	f.label = label
 	f.text = text
-	return "Добавлено: 350.00 ₽", false, f.err
+	return "Added: RUB 350.00", false, f.err
 }
 
 func TestTrustedIdentityAndPrivateChats(t *testing.T) {
@@ -49,11 +50,11 @@ func TestTrustedIdentityAndPrivateChats(t *testing.T) {
 	bot := New("secret", srv.Client(), p, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	bot.baseURL = srv.URL
 	var u Update
-	json.Unmarshal([]byte(`{"update_id":42,"message":{"from":{"id":111,"first_name":"Анна","username":"anna"},"chat":{"id":111,"type":"private"},"text":"кофе 350 user_id=222"}}`), &u)
+	json.Unmarshal([]byte(`{"update_id":42,"message":{"from":{"id":111,"first_name":"Anna","username":"anna"},"chat":{"id":111,"type":"private"},"text":"coffee 350 user_id=222"}}`), &u)
 	if err := bot.Handle(context.Background(), u); err != nil {
 		t.Fatal(err)
 	}
-	if p.user != 111 || p.update != 42 || sent.ChatID != 111 || p.label != "Анна (@anna)" {
+	if p.user != 111 || p.update != 42 || sent.ChatID != 111 || p.label != "Anna (@anna)" {
 		t.Fatalf("identity not bound: %+v %+v", p, sent)
 	}
 	u.Message.Chat.ID = 222
@@ -68,7 +69,7 @@ func TestTrustedIdentityAndPrivateChats(t *testing.T) {
 	u.Message.Chat.Type = "private"
 	p.err = errors.New("key=must-not-leak")
 	bot.Handle(context.Background(), u)
-	if !strings.Contains(sent.Text, "не сохранены") || strings.Contains(sent.Text, "must-not-leak") {
+	if !strings.Contains(sent.Text, "No changes were saved") || strings.Contains(sent.Text, "must-not-leak") {
 		t.Fatal("unsafe failure reply")
 	}
 }
@@ -103,7 +104,7 @@ func TestStartGreetingBypassesProcessorAndUsesTrustedChat(t *testing.T) {
 	bot := New("secret", srv.Client(), p, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	bot.baseURL = srv.URL
 	var u Update
-	if err := json.Unmarshal([]byte(`{"update_id":42,"message":{"from":{"id":111,"first_name":"Анна"},"chat":{"id":111,"type":"private"},"text":"/start"}}`), &u); err != nil {
+	if err := json.Unmarshal([]byte(`{"update_id":42,"message":{"from":{"id":111,"first_name":"Anna"},"chat":{"id":111,"type":"private"},"text":"/start"}}`), &u); err != nil {
 		t.Fatal(err)
 	}
 	for _, text := range []string{"/start", "  /start  ", "/start user_id=222", "/start\tpayload", "/start\npayload"} {
@@ -114,7 +115,7 @@ func TestStartGreetingBypassesProcessorAndUsesTrustedChat(t *testing.T) {
 		if p.calls != 0 || sent.ChatID != 111 {
 			t.Fatalf("start must bypass processor and keep trusted owner: processor=%+v sent=%+v", p, sent)
 		}
-		if !strings.Contains(sent.Text, "кофе 350") || !strings.Contains(sent.Text, "покажи траты") || strings.Contains(sent.Text, "222") {
+		if !strings.Contains(sent.Text, "coffee 350") || !strings.Contains(sent.Text, "show my expenses") || strings.Contains(sent.Text, "222") {
 			t.Fatalf("unexpected greeting: %s", sent.Text)
 		}
 	}
@@ -156,7 +157,7 @@ func TestStartDoesNotMatchLongerCommandOrNormalText(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"update_id":42,"message":{"from":{"id":111},"chat":{"id":111,"type":"private"},"text":"/starting"}}`), &u); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{"/starting", "/startpayload", "кофе 350", "покажи траты за неделю"} {
+	for _, text := range []string{"/starting", "/startpayload", "coffee 350", "show my expenses this week"} {
 		u.Message.Text = text
 		before := p.calls
 		if err := bot.Handle(context.Background(), u); err != nil {
@@ -165,6 +166,158 @@ func TestStartDoesNotMatchLongerCommandOrNormalText(t *testing.T) {
 		if p.calls != before+1 || p.text != text || p.user != 111 {
 			t.Fatalf("normal request did not reach processor with trusted owner: %+v", p)
 		}
+	}
+}
+
+func TestRussianMessagesRemainSupported(t *testing.T) {
+	p := &fakeProcessor{}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return telegramResponse(http.StatusOK, `{"ok":true,"result":{}}`), nil
+	})}
+	bot := New("test", client, p, nil)
+	var u Update
+	if err := json.Unmarshal([]byte(`{"update_id":42,"message":{"from":{"id":111,"first_name":"Анна"},"chat":{"id":111,"type":"private"},"text":"кофе 350"}}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"кофе 350", "покажи траты за неделю"} {
+		u.Message.Text = text
+		before := p.calls
+		if err := bot.Handle(context.Background(), u); err != nil {
+			t.Fatal(err)
+		}
+		if p.calls != before+1 || p.text != text || p.user != 111 || p.label != "Анна" {
+			t.Fatalf("Russian input or sender label was changed: %+v", p)
+		}
+	}
+}
+
+func telegramResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
+}
+
+func TestPermanentSendFailureDoesNotStarveLaterUpdates(t *testing.T) {
+	for _, status := range []int{http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer cancel()
+			polls, rejected, delivered := 0, 0, 0
+			var finalOffset int64
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/getUpdates") {
+					polls++
+					if polls == 1 {
+						return telegramResponse(http.StatusOK, `{"ok":true,"result":[{"update_id":10,"message":{"from":{"id":111},"chat":{"id":111,"type":"private"},"text":"/start"}},{"update_id":11,"message":{"from":{"id":222},"chat":{"id":222,"type":"private"},"text":"/start"}}]}`), nil
+					}
+					var payload struct {
+						Offset int64 `json:"offset"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					finalOffset = payload.Offset
+					cancel()
+					return nil, context.Canceled
+				}
+				var payload struct {
+					ChatID int64 `json:"chat_id"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				if payload.ChatID == 111 {
+					rejected++
+					return telegramResponse(status, `{"ok":false,"description":"private server detail TOP_SECRET"}`), nil
+				}
+				delivered++
+				return telegramResponse(http.StatusOK, `{"ok":true,"result":{}}`), nil
+			})}
+			var logs bytes.Buffer
+			bot := New("TOP_SECRET", client, nil, slog.New(slog.NewTextHandler(&logs, nil)))
+			_ = bot.Run(ctx)
+			if rejected != 1 || delivered != 1 || finalOffset != 12 {
+				t.Fatalf("permanent failure blocked newer updates: rejected=%d delivered=%d next_offset=%d", rejected, delivered, finalOffset)
+			}
+			if strings.Contains(logs.String(), "TOP_SECRET") || strings.Contains(logs.String(), "private server detail") {
+				t.Fatalf("Telegram error body or token leaked: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestTemporarySendFailureRetriesBeforeAcknowledging(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		err    error
+	}{
+		{name: "rate limited", status: http.StatusTooManyRequests},
+		{name: "server error", status: http.StatusServiceUnavailable},
+		{name: "transport error", err: timeoutTransportError{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			polls, attempts := 0, 0
+			var finalOffset int64
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/getUpdates") {
+					polls++
+					if polls == 1 {
+						return telegramResponse(http.StatusOK, `{"ok":true,"result":[{"update_id":10,"message":{"from":{"id":111},"chat":{"id":111,"type":"private"},"text":"/start"}}]}`), nil
+					}
+					var payload struct {
+						Offset int64 `json:"offset"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					finalOffset = payload.Offset
+					cancel()
+					return nil, context.Canceled
+				}
+				attempts++
+				if attempts == 1 {
+					if tc.err != nil {
+						return nil, tc.err
+					}
+					return telegramResponse(tc.status, `{"ok":false,"description":"private detail TOP_SECRET"}`), nil
+				}
+				return telegramResponse(http.StatusOK, `{"ok":true,"result":{}}`), nil
+			})}
+			bot := New("TOP_SECRET", client, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+			_ = bot.Run(ctx)
+			if attempts != 2 || finalOffset != 11 {
+				t.Fatalf("temporary delivery failure was acknowledged without retry: attempts=%d next_offset=%d", attempts, finalOffset)
+			}
+		})
+	}
+}
+
+func TestTelegramAPIStatusDoesNotExposeErrorBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   int
+	}{
+		{"HTTP error", http.StatusForbidden, `{"ok":false,"description":"private detail TOP_SECRET"}`, http.StatusForbidden},
+		{"API envelope error", http.StatusOK, `{"ok":false,"error_code":403,"description":"private detail TOP_SECRET"}`, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				return telegramResponse(tc.status, tc.body), nil
+			})}
+			bot := New("TOP_SECRET", client, nil, nil)
+			err := bot.call(context.Background(), "sendMessage", nil, nil)
+			var failure *apiError
+			if !errors.As(err, &failure) || failure.status != tc.want || !permanentSendFailure(err) {
+				t.Fatalf("Telegram status classification lost: %v", err)
+			}
+			if strings.Contains(err.Error(), "TOP_SECRET") || strings.Contains(err.Error(), "private detail") {
+				t.Fatalf("Telegram error body leaked: %v", err)
+			}
+		})
 	}
 }
 

@@ -1,3 +1,18 @@
+// Legacy Russian keys are stored API values; only their displayed labels are translated.
+export const CATEGORY_LABELS = Object.freeze({
+  'еда': 'Food',
+  'транспорт': 'Transport',
+  'жильё': 'Housing',
+  'развлечения': 'Entertainment',
+  'здоровье': 'Health',
+  'покупки': 'Shopping',
+  'другое': 'Other',
+});
+
+export function categoryLabel(key) {
+  return Object.hasOwn(CATEGORY_LABELS, key) ? CATEGORY_LABELS[key] : 'Unknown category';
+}
+
 /** Normalize user-entered money without binary floating-point arithmetic. */
 export function normalizeAmount(input) {
   const value = String(input).trim().replace(',', '.');
@@ -12,8 +27,8 @@ export function normalizeAmount(input) {
 export function formatMoney(value) {
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value));
   if (!match) return '—';
-  const whole = match[1].replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+(?!\d))/g, '\u00a0');
-  return `${whole},${(match[2] || '').padEnd(2, '0')}\u00a0₽`;
+  const whole = match[1].replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${whole}.${(match[2] || '').padEnd(2, '0')}\u00a0₽`;
 }
 
 export function isValidDate(value) {
@@ -28,7 +43,7 @@ export function localToday(date = new Date()) {
 
 export function formatDate(value) {
   if (!isValidDate(value)) return value || '—';
-  return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
+  return new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
 }
 
 export function buildQuery(filters, page = 1) {
@@ -61,12 +76,12 @@ function initializeDashboard() {
       response = await fetch(path, { ...options, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers } });
     } catch (error) {
       if (error.name === 'AbortError') throw error;
-      throw new Error('Не удалось подключиться к серверу. Проверьте, что сервис запущен.');
+      throw new Error('Could not connect to the server. Check that the service is running.');
     }
     if (response.status === 204) return null;
     let result;
-    try { result = await response.json(); } catch { throw new Error('Сервер вернул неожиданный ответ. Повторите попытку.'); }
-    if (!response.ok) throw new Error(result?.error?.message || 'Не удалось выполнить действие. Повторите попытку.');
+    try { result = await response.json(); } catch { throw new Error('The server returned an unexpected response. Please try again.'); }
+    if (!response.ok) throw new Error(result?.error?.message || 'The request failed. Please try again.');
     return result;
   }
 
@@ -77,13 +92,13 @@ function initializeDashboard() {
   }
 
   function userLabel(id) {
-    return state.users.find((user) => String(user.id) === String(id))?.label || `Пользователь ${id}`;
+    return state.users.find((user) => String(user.id) === String(id))?.label || `User ${id}`;
   }
 
   function renderMetadata() {
     const filterUser = byId('filter-user');
     const oldUser = filterUser.value;
-    filterUser.replaceChildren(new Option('Вся семья', ''));
+    filterUser.replaceChildren(new Option('Whole family', ''));
     byId('family-users').replaceChildren();
     for (const user of state.users) {
       filterUser.append(new Option(`${user.label} · ${user.id}`, String(user.id)));
@@ -92,16 +107,16 @@ function initializeDashboard() {
     }
     if ([...filterUser.options].some((option) => option.value === oldUser)) filterUser.value = oldUser;
     else if (oldUser) {
-      filterUser.append(new Option(`Пользователь ${oldUser} · ${oldUser}`, oldUser));
+      filterUser.append(new Option(`User ${oldUser} · ${oldUser}`, oldUser));
       filterUser.value = oldUser;
     }
     const filterCategory = byId('filter-category');
     const oldCategory = filterCategory.value;
-    filterCategory.replaceChildren(new Option('Все категории', ''));
+    filterCategory.replaceChildren(new Option('All categories', ''));
     byId('expense-category').replaceChildren();
     for (const category of state.categories) {
-      filterCategory.append(new Option(category, category));
-      byId('expense-category').append(new Option(category, category));
+      filterCategory.append(new Option(categoryLabel(category), category));
+      byId('expense-category').append(new Option(categoryLabel(category), category));
     }
     filterCategory.value = oldCategory;
     byId('add-expense').disabled = false;
@@ -128,32 +143,32 @@ function initializeDashboard() {
     for (const expense of items) {
       const row = byId('expense-row-template').content.firstElementChild.cloneNode(true);
       row.querySelector('.category-icon').textContent = icons[expense.category] || icons['другое'];
-      row.querySelector('.expense-comment').textContent = expense.comment || expense.category;
-      row.querySelector('.expense-comment').title = expense.comment || expense.category;
-      row.querySelector('.expense-category').textContent = expense.category;
+      row.querySelector('.expense-comment').textContent = expense.comment || categoryLabel(expense.category);
+      row.querySelector('.expense-comment').title = expense.comment || categoryLabel(expense.category);
+      row.querySelector('.expense-category').textContent = categoryLabel(expense.category);
       row.querySelector('.owner-label').textContent = userLabel(expense.user_id);
       row.querySelector('.owner-id').textContent = `ID ${expense.user_id}`;
       row.querySelector('.expense-date').textContent = formatDate(expense.spent_at);
       row.querySelector('.expense-amount').textContent = formatMoney(expense.amount);
       const edit = row.querySelector('.edit-expense');
-      edit.setAttribute('aria-label', `Изменить: ${expense.comment || expense.category}, ${formatMoney(expense.amount)}`);
+      edit.setAttribute('aria-label', `Edit: ${expense.comment || categoryLabel(expense.category)}, ${formatMoney(expense.amount)}`);
       edit.addEventListener('click', () => openExpense(expense, edit));
       const remove = row.querySelector('.delete-expense');
-      remove.setAttribute('aria-label', `Удалить: ${expense.comment || expense.category}, ${formatMoney(expense.amount)}`);
+      remove.setAttribute('aria-label', `Delete: ${expense.comment || categoryLabel(expense.category)}, ${formatMoney(expense.amount)}`);
       remove.addEventListener('click', () => openDelete(expense, remove));
       rows.append(row);
     }
     byId('list-state').hidden = items.length > 0;
     if (items.length === 0) {
       const filtered = Object.values(state.filters).some(Boolean);
-      setListState(filtered ? 'По этим фильтрам расходов нет' : 'Здесь появятся расходы семьи', filtered ? 'Измените период, категорию или члена семьи. Можно также сбросить все фильтры.' : 'Добавьте первый расход здесь или отправьте боту сообщение, например «кофе 350».');
+      setListState(filtered ? 'No expenses match these filters' : 'Your family’s expenses will appear here', filtered ? 'Try a different period, category or family member, or reset all filters.' : 'Add your first expense here or message the bot, for example “coffee 350”.');
     }
   }
 
   function renderPagination() {
     const pageCount = Math.max(1, Math.ceil(state.total / 20));
     byId('pagination').hidden = state.total <= 20;
-    byId('page-caption').textContent = `Страница ${state.page} из ${pageCount}`;
+    byId('page-caption').textContent = `Page ${state.page} of ${pageCount}`;
     byId('previous-page').disabled = state.loading || state.page <= 1;
     byId('next-page').disabled = state.loading || state.page >= pageCount;
   }
@@ -168,8 +183,8 @@ function initializeDashboard() {
     byId('expense-rows').replaceChildren();
     byId('total-amount').textContent = '—';
     byId('total-count').textContent = '—';
-    byId('results-caption').textContent = 'Загружаем расходы…';
-    setListState('Загружаем расходы', 'Собираем данные семьи.', true);
+    byId('results-caption').textContent = 'Loading expenses…';
+    setListState('Loading expenses', 'Fetching your family’s expenses.', true);
     renderPagination();
     try {
       if (!state.metadataReady) await loadMetadata();
@@ -183,15 +198,15 @@ function initializeDashboard() {
       if (state.page > lastPage) { state.page = lastPage; await loadExpenses(); return; }
       renderRows(list.items);
       byId('total-amount').textContent = formatMoney(summary.amount);
-      byId('total-count').textContent = new Intl.NumberFormat('ru-RU').format(summary.count);
-      byId('total-caption').textContent = state.filters.from || state.filters.to ? `${state.filters.from ? formatDate(state.filters.from) : 'Начало'} — ${state.filters.to ? formatDate(state.filters.to) : 'без ограничения'}` : 'За всё время · по выбранным фильтрам';
-      byId('results-caption').textContent = list.total ? `${new Intl.NumberFormat('ru-RU').format(list.total)} ${pluralExpenses(list.total)}` : 'Пока нет расходов';
+      byId('total-count').textContent = new Intl.NumberFormat('en-GB').format(summary.count);
+      byId('total-caption').textContent = state.filters.from || state.filters.to ? `${state.filters.from ? formatDate(state.filters.from) : 'Beginning'} — ${state.filters.to ? formatDate(state.filters.to) : 'no end date'}` : 'All time · selected filters';
+      byId('results-caption').textContent = list.total ? `${new Intl.NumberFormat('en-GB').format(list.total)} ${pluralExpenses(list.total)}` : 'No expenses yet';
     } catch (error) {
       if (error.name === 'AbortError' || controller.signal.aborted) return;
       byId('page-error-text').textContent = error.message;
       byId('page-error').hidden = false;
-      byId('results-caption').textContent = 'Не удалось загрузить данные';
-      setListState('Данные временно недоступны', 'Повторите загрузку с помощью кнопки выше.');
+      byId('results-caption').textContent = 'Could not load expenses';
+      setListState('Expenses are temporarily unavailable', 'Use the Retry button above to load them again.');
       byId('pagination').hidden = true;
     } finally {
       if (state.controller === controller) {
@@ -203,9 +218,7 @@ function initializeDashboard() {
   }
 
   function pluralExpenses(count) {
-    const last = count % 10;
-    const teen = count % 100;
-    return last === 1 && teen !== 11 ? 'расход' : last >= 2 && last <= 4 && !(teen >= 12 && teen <= 14) ? 'расхода' : 'расходов';
+    return count === 1 ? 'expense' : 'expenses';
   }
 
   function toast(message) {
@@ -218,7 +231,7 @@ function initializeDashboard() {
   function updateUserHint() {
     const id = byId('expense-user').value.trim();
     const existing = state.users.find((user) => String(user.id) === id);
-    byId('user-hint').textContent = existing ? `Владелец: ${existing.label} · ID ${existing.id}` : 'Выберите ID из списка или введите Telegram ID вручную.';
+    byId('user-hint').textContent = existing ? `Owner: ${existing.label} · ID ${existing.id}` : 'Choose an ID from the list or enter a Telegram ID manually.';
   }
 
   function openExpense(expense = null, trigger = byId('add-expense')) {
@@ -227,10 +240,10 @@ function initializeDashboard() {
     state.focusReturn = trigger;
     byId('expense-form').reset();
     for (const input of byId('expense-form').querySelectorAll('[aria-invalid]')) input.removeAttribute('aria-invalid');
-    byId('dialog-title').textContent = expense ? 'Изменить расход' : 'Добавить расход';
-    byId('save-expense').textContent = expense ? 'Сохранить изменения' : 'Сохранить расход';
+    byId('dialog-title').textContent = expense ? 'Edit expense' : 'Add expense';
+    byId('save-expense').textContent = expense ? 'Save changes' : 'Save expense';
     byId('expense-user').value = expense ? String(expense.user_id) : state.filters.user_id || (state.users.length === 1 ? String(state.users[0].id) : '');
-    byId('expense-amount').value = expense ? expense.amount.replace('.', ',') : '';
+    byId('expense-amount').value = expense ? expense.amount : '';
     byId('expense-date').value = expense ? expense.spent_at : localToday();
     byId('expense-category').value = expense ? expense.category : state.filters.category || 'другое';
     byId('expense-comment').value = expense?.comment || '';
@@ -243,7 +256,7 @@ function initializeDashboard() {
   function setSaving(saving) {
     state.saving = saving;
     for (const control of byId('expense-form').querySelectorAll('input, select, textarea, button')) control.disabled = saving;
-    byId('save-expense').textContent = saving ? 'Сохраняем…' : state.editID === null ? 'Сохранить расход' : 'Сохранить изменения';
+    byId('save-expense').textContent = saving ? 'Saving…' : state.editID === null ? 'Save expense' : 'Save changes';
   }
 
   function invalidField(id, message) {
@@ -258,20 +271,20 @@ function initializeDashboard() {
     setError('expense-error');
     for (const input of byId('expense-form').querySelectorAll('[aria-invalid]')) input.removeAttribute('aria-invalid');
     const userID = parseUserID(byId('expense-user').value);
-    if (userID === null) return invalidField('expense-user', 'Введите положительный Telegram ID: только цифры, без пробелов.');
+    if (userID === null) return invalidField('expense-user', 'Enter a positive Telegram ID using digits only, without spaces.');
     const amount = normalizeAmount(byId('expense-amount').value);
-    if (amount === null) return invalidField('expense-amount', 'Введите сумму от 0,01 до 999 999 999,99 ₽, не более двух цифр после запятой. Например, 350,50.');
+    if (amount === null) return invalidField('expense-amount', 'Enter an amount from 0.01 to 999,999,999.99 RUB with up to two decimal places. For example, 350.50.');
     const spentAt = byId('expense-date').value;
-    if (!isValidDate(spentAt)) return invalidField('expense-date', 'Укажите корректную дату расхода.');
+    if (!isValidDate(spentAt)) return invalidField('expense-date', 'Enter a valid expense date.');
     const category = byId('expense-category').value;
-    if (!state.categories.includes(category)) return invalidField('expense-category', 'Выберите категорию из списка.');
+    if (!state.categories.includes(category)) return invalidField('expense-category', 'Choose a category from the list.');
     const input = { user_id: userID, amount, category, spent_at: spentAt, comment: byId('expense-comment').value.trim() };
     const wasEditing = state.editID !== null;
     setSaving(true);
     try {
       await api(wasEditing ? `/api/expenses/${encodeURIComponent(state.editID)}` : '/api/expenses', { method: wasEditing ? 'PUT' : 'POST', body: JSON.stringify(input) });
       byId('expense-dialog').close();
-      toast(wasEditing ? 'Изменения сохранены' : 'Расход добавлен');
+      toast(wasEditing ? 'Changes saved' : 'Expense added');
       // Refresh family names/IDs as manual creation can introduce a new owner.
       state.metadataReady = false;
       if (!wasEditing) state.page = 1;
@@ -284,7 +297,7 @@ function initializeDashboard() {
     if (state.saving || state.deleting) return;
     state.deleteExpense = expense;
     state.focusReturn = trigger;
-    byId('delete-description').textContent = `${expense.comment || expense.category} · ${formatMoney(expense.amount)} · ${formatDate(expense.spent_at)}. Владелец: ${userLabel(expense.user_id)} (ID ${expense.user_id}).`;
+    byId('delete-description').textContent = `${expense.comment || categoryLabel(expense.category)} · ${formatMoney(expense.amount)} · ${formatDate(expense.spent_at)}. Owner: ${userLabel(expense.user_id)} (ID ${expense.user_id}).`;
     setError('delete-error');
     byId('delete-dialog').showModal();
     byId('delete-dialog').querySelector('[data-close]').focus();
@@ -295,19 +308,19 @@ function initializeDashboard() {
     if (state.deleting || !state.deleteExpense) return;
     state.deleting = true;
     for (const button of byId('delete-form').querySelectorAll('button')) button.disabled = true;
-    byId('confirm-delete').textContent = 'Удаляем…';
+    byId('confirm-delete').textContent = 'Deleting…';
     setError('delete-error');
     try {
       await api(`/api/expenses/${encodeURIComponent(state.deleteExpense.id)}`, { method: 'DELETE' });
       byId('delete-dialog').close();
-      toast('Расход удалён');
+      toast('Expense deleted');
       state.metadataReady = false;
       await loadExpenses();
       if (!state.focusReturn?.isConnected && document.activeElement === document.body) byId('add-expense').focus();
     } catch (error) { setError('delete-error', error.message); } finally {
       state.deleting = false;
       for (const button of byId('delete-form').querySelectorAll('button')) button.disabled = false;
-      byId('confirm-delete').textContent = 'Удалить';
+      byId('confirm-delete').textContent = 'Delete';
     }
   });
 
@@ -316,9 +329,9 @@ function initializeDashboard() {
     setError('filter-error');
     const filters = Object.fromEntries(new FormData(event.currentTarget));
     for (const name of ['from', 'to']) {
-      if (filters[name] && !isValidDate(filters[name])) { setError('filter-error', 'Укажите корректные даты периода.'); byId(`filter-${name}`).focus(); return; }
+      if (filters[name] && !isValidDate(filters[name])) { setError('filter-error', 'Enter valid dates for the period.'); byId(`filter-${name}`).focus(); return; }
     }
-    if (filters.from && filters.to && filters.from > filters.to) { setError('filter-error', 'Начало периода должно быть раньше его окончания или совпадать с ним.'); byId('filter-from').focus(); return; }
+    if (filters.from && filters.to && filters.from > filters.to) { setError('filter-error', 'The start date must be on or before the end date.'); byId('filter-from').focus(); return; }
     state.filters = filters;
     state.page = 1;
     loadExpenses();

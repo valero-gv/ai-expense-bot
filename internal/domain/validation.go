@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -39,6 +40,9 @@ func ValidateInput(in Input) error {
 	if !utf8.ValidString(in.Comment) || utf8.RuneCountInString(in.Comment) > 1000 {
 		return fmt.Errorf("%w: comment exceeds 1000 characters", ErrInvalid)
 	}
+	if strings.ContainsRune(in.Comment, 0) {
+		return fmt.Errorf("%w: comment contains an unsupported character", ErrInvalid)
+	}
 	return nil
 }
 
@@ -64,6 +68,9 @@ func ValidateFilter(f Filter) error {
 	}
 	if !utf8.ValidString(f.Query) || utf8.RuneCountInString(f.Query) > 200 {
 		return fmt.Errorf("%w: query exceeds 200 characters", ErrInvalid)
+	}
+	if strings.ContainsRune(f.Query, 0) {
+		return fmt.Errorf("%w: query contains an unsupported character", ErrInvalid)
 	}
 	if f.Page < 0 || f.Page > 1_000_000 || f.PageSize < 0 || f.PageSize > 100 {
 		return fmt.Errorf("%w: page must be 1..1000000 and page_size 1..100", ErrInvalid)

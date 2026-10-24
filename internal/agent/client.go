@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -93,6 +94,12 @@ func (c *Client) Complete(ctx context.Context, messages []Message, tools []Tool)
 		if ctx.Err() != nil {
 			return Message{}, fmt.Errorf("LLM request: %w", ctx.Err())
 		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return Message{}, fmt.Errorf("LLM request: %w", context.DeadlineExceeded)
+		}
+		if errors.Is(err, context.Canceled) {
+			return Message{}, fmt.Errorf("LLM request: %w", context.Canceled)
+		}
 		// Do not include URL credentials, request text, or provider response bodies.
 		return Message{}, fmt.Errorf("LLM transport failed")
 	}
@@ -118,7 +125,10 @@ func (c *Client) Complete(ctx context.Context, messages []Message, tools []Tool)
 	}
 	choice := result.Choices[0]
 	if choice.FinishReason != "stop" && choice.FinishReason != "tool_calls" {
-		return Message{}, fmt.Errorf("LLM response incomplete (%s)", choice.FinishReason)
+		if choice.FinishReason == "length" || choice.FinishReason == "content_filter" {
+			return Message{}, fmt.Errorf("LLM response incomplete (%s)", choice.FinishReason)
+		}
+		return Message{}, fmt.Errorf("invalid LLM finish reason")
 	}
 	if choice.Message.Role != "assistant" || len(choice.Message.Content) > 16000 {
 		return Message{}, fmt.Errorf("invalid LLM assistant message")

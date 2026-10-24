@@ -3,6 +3,8 @@ package domain
 import (
 	"encoding/json"
 	"math"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,13 +54,14 @@ func TestExactMoney(t *testing.T) {
 }
 
 func TestValidation(t *testing.T) {
-	valid := Input{UserID: 123, Amount: 1, Category: "еда", SpentAt: "2024-02-29"}
+	valid := Input{UserID: 123, Amount: 1, Category: Food, SpentAt: "2024-02-29"}
 	if err := ValidateInput(valid); err != nil {
 		t.Fatal(err)
 	}
 	for _, edit := range []func(*Input){
 		func(i *Input) { i.UserID = 0 }, func(i *Input) { i.Amount = 0 }, func(i *Input) { i.Amount = MaxExpense + 1 },
-		func(i *Input) { i.Category = "кофе" }, func(i *Input) { i.SpentAt = "2023-02-29" }, func(i *Input) { i.SpentAt = "2026-2-01" },
+		func(i *Input) { i.Category = "coffee" }, func(i *Input) { i.SpentAt = "2023-02-29" }, func(i *Input) { i.SpentAt = "2026-2-01" },
+		func(i *Input) { i.Comment = "coffee\x00receipt" },
 	} {
 		i := valid
 		edit(&i)
@@ -66,9 +69,56 @@ func TestValidation(t *testing.T) {
 			t.Errorf("accepted %+v", i)
 		}
 	}
-	for _, f := range []Filter{{From: "2026-02-30"}, {From: "2026-10-16", To: "2026-10-15"}, {Category: "x"}, {Page: -1}, {PageSize: 101}} {
+	for _, f := range []Filter{{From: "2026-02-30"}, {From: "2026-10-16", To: "2026-10-15"}, {Category: "x"}, {Page: -1}, {PageSize: 101}, {Query: "coffee\x00receipt"}} {
 		if ValidateFilter(f) == nil {
 			t.Errorf("accepted filter %+v", f)
+		}
+	}
+}
+
+func TestCategoryLabelsPreserveStoredKeys(t *testing.T) {
+	wantKeys := []string{Food, Transport, Housing, Entertainment, Health, Shopping, Other}
+	if !reflect.DeepEqual(Categories, wantKeys) {
+		t.Fatalf("category order changed: %v", Categories)
+	}
+	wantLabels := []string{"Food", "Transport", "Housing", "Entertainment", "Health", "Shopping", "Other"}
+	for i, key := range wantKeys {
+		if !ValidCategory(key) {
+			t.Errorf("stored category is invalid: %q", key)
+		}
+		if label := CategoryLabel(key); label != wantLabels[i] {
+			t.Errorf("CategoryLabel(%q) = %q, want %q", key, label, wantLabels[i])
+		}
+		if ValidCategory(wantLabels[i]) {
+			t.Errorf("display label accepted as a stored key: %q", wantLabels[i])
+		}
+	}
+	for _, unknown := range []string{"", "custom category"} {
+		if CategoryLabel(unknown) != unknown {
+			t.Errorf("unknown category was changed: %q", unknown)
+		}
+	}
+}
+
+func TestTextValidationRejectsUnsupportedCharactersAndHonorsRuneLimits(t *testing.T) {
+	valid := Input{UserID: 123, Amount: 1, Category: Food, SpentAt: "2026-10-16"}
+	valid.Comment = strings.Repeat("é", 1000)
+	if err := ValidateInput(valid); err != nil {
+		t.Fatalf("1000 Unicode characters rejected: %v", err)
+	}
+	for _, comment := range []string{"\x00", "coffee\x00receipt", string([]byte{0xff}), strings.Repeat("x", 1001)} {
+		in := valid
+		in.Comment = comment
+		if err := ValidateInput(in); err == nil {
+			t.Errorf("invalid comment accepted: %q", comment)
+		}
+	}
+	if err := ValidateFilter(Filter{Query: strings.Repeat("é", 200)}); err != nil {
+		t.Fatalf("200 Unicode query characters rejected: %v", err)
+	}
+	for _, query := range []string{"\x00", "coffee\x00receipt", string([]byte{0xff}), strings.Repeat("x", 201)} {
+		if err := ValidateFilter(Filter{Query: query}); err == nil {
+			t.Errorf("invalid query accepted: %q", query)
 		}
 	}
 }

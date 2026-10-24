@@ -70,26 +70,18 @@ func run(log *slog.Logger) error {
 	}
 	repo := store.New(db)
 	srv := &http.Server{Addr: cfg.ListenAddr, Handler: api.New(repo, web.Files), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
+	var poll func(context.Context) error
 	if cfg.TelegramToken != "" {
 		llm := agent.NewClient(cfg.LLMBaseURL, cfg.LLMModel, cfg.LLMAPIKey, &http.Client{Timeout: cfg.LLMTimeout})
 		engine := agent.NewEngine(repo, llm, agent.Config{Location: cfg.Location, Timeout: cfg.LLMTimeout})
 		bot := telegram.New(cfg.TelegramToken, nil, engine, log)
-		go func() { _ = bot.Run(ctx) }()
+		poll = bot.Run
 		log.Info("Telegram polling enabled", "model", cfg.LLMModel, "timezone", cfg.Location.String())
 	} else {
 		log.Info("Telegram polling disabled; configure TELEGRAM_BOT_TOKEN and LLM_API_KEY to enable")
 	}
-	errs := make(chan error, 1)
-	go func() { log.Info("HTTP server ready", "address", cfg.ListenAddr); errs <- srv.ListenAndServe() }()
-	select {
-	case err := <-errs:
-		if err != http.ErrServerClosed {
-			return err
-		}
-		return nil
-	case <-ctx.Done():
-		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutdown)
-	}
+	return serve(ctx, srv, func() error {
+		log.Info("HTTP server starting", "address", cfg.ListenAddr)
+		return srv.ListenAndServe()
+	}, poll, 10*time.Second)
 }

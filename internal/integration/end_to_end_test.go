@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -29,28 +30,35 @@ func database(t *testing.T) (*store.Store, *sql.DB) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
+		if os.Getenv("TEST_REQUIRE_DATABASE") == "1" {
+			t.Fatal("TEST_DATABASE_URL must be set when TEST_REQUIRE_DATABASE=1")
+		}
 		t.Skip("TEST_DATABASE_URL unset: real PostgreSQL integration")
 	}
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelStartup()
 	admin := stdlib.OpenDB(*cfg)
 	t.Cleanup(func() { admin.Close() })
 	schema := fmt.Sprintf("expensebot_e2e_%d_%d", os.Getpid(), time.Now().UnixNano())
 	quoted := pgx.Identifier{schema}.Sanitize()
-	if _, err = admin.Exec("CREATE SCHEMA " + quoted); err != nil {
+	if _, err = admin.ExecContext(startupCtx, "CREATE SCHEMA "+quoted); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if _, err := admin.Exec("DROP SCHEMA " + quoted + " CASCADE"); err != nil {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelCleanup()
+		if _, err := admin.ExecContext(cleanupCtx, "DROP SCHEMA "+quoted+" CASCADE"); err != nil {
 			t.Error(err)
 		}
 	})
 	cfg.RuntimeParams["search_path"] = schema
 	db := stdlib.OpenDB(*cfg)
 	t.Cleanup(func() { db.Close() })
-	if err = store.Migrate(context.Background(), db); err != nil {
+	if err = store.Migrate(startupCtx, db); err != nil {
 		t.Fatal(err)
 	}
 	return store.New(db), db
@@ -106,10 +114,10 @@ func calls(tc ...agent.ToolCall) any {
 	return map[string]any{"choices": []any{map[string]any{"message": agent.Message{Role: "assistant", ToolCalls: tc}, "finish_reason": "tool_calls"}}}
 }
 func stop() any {
-	return map[string]any{"choices": []any{map[string]any{"message": agent.Message{Role: "assistant", Content: "готово"}, "finish_reason": "stop"}}}
+	return map[string]any{"choices": []any{map[string]any{"message": agent.Message{Role: "assistant", Content: "Done"}, "finish_reason": "stop"}}}
 }
 func createArgs(amount, comment string) string {
-	return fmt.Sprintf(`{"amount":%q,"category":"еда","spent_at":"2026-10-16","comment":%q}`, amount, comment)
+	return fmt.Sprintf(`{"amount":%q,"category":%q,"spent_at":"2026-10-16","comment":%q}`, amount, domain.Food, comment)
 }
 
 func TestRealAgentHTTPDatabaseAndAdminAPI(t *testing.T) {
@@ -121,8 +129,8 @@ func TestRealAgentHTTPDatabaseAndAdminAPI(t *testing.T) {
 	client := agent.NewClient(model.URL+"/v1", "test-model", "fake-not-a-secret", model.Client())
 	loc, _ := time.LoadLocation("Europe/Moscow")
 	engine := agent.NewEngine(repo, client, agent.Config{Location: loc, Now: func() time.Time { return time.Date(2026, 10, 16, 12, 0, 0, 0, loc) }, Timeout: 2 * time.Second})
-	script.enqueue(calls(tool("a", "create_expense", createArgs("350", "кофе")), tool("b", "create_expense", createArgs("350.00", "кофе"))), stop())
-	reply, dup, err := engine.Process(ctx, 9001, 111, "Анна", "кофе 350")
+	script.enqueue(calls(tool("a", "create_expense", createArgs("350", "coffee")), tool("b", "create_expense", createArgs("350.00", "coffee"))), stop())
+	reply, dup, err := engine.Process(ctx, 9001, 111, "Anna", "coffee 350")
 	if err != nil || dup || !strings.Contains(reply, "350.00") {
 		t.Fatalf("create %q %v %v", reply, dup, err)
 	}
@@ -131,7 +139,7 @@ func TestRealAgentHTTPDatabaseAndAdminAPI(t *testing.T) {
 		t.Fatalf("scoping/dedup %+v %v", page, err)
 	}
 	first := page.Items[0]
-	_, dup, err = engine.Process(ctx, 9001, 111, "Анна", "кофе 350")
+	_, dup, err = engine.Process(ctx, 9001, 111, "Anna", "coffee 350")
 	if err != nil || !dup {
 		t.Fatal("duplicate update", dup, err)
 	}
@@ -141,14 +149,14 @@ func TestRealAgentHTTPDatabaseAndAdminAPI(t *testing.T) {
 	if n != 2 {
 		t.Fatal("duplicate hit LLM", n)
 	}
-	script.enqueue(calls(tool("c", "create_expense", createArgs("0.10", "кофе Бориса"))), stop())
-	if _, _, err = engine.Process(ctx, 9002, 222, "Борис", "кофе 0,10"); err != nil {
+	script.enqueue(calls(tool("c", "create_expense", createArgs("0.10", "Boris's coffee"))), stop())
+	if _, _, err = engine.Process(ctx, 9002, 222, "Boris", "coffee 0,10"); err != nil {
 		t.Fatal(err)
 	}
 	page, _ = repo.List(ctx, domain.Filter{UserID: ptr(222)})
 	foreign := page.Items[0]
 	script.enqueue(calls(tool("d", "update_expense", `{"selector":{"id":null,"query":null,"latest":true},"amount":"450","category":null,"spent_at":null,"comment":null}`)), stop())
-	if _, _, err = engine.Process(ctx, 9003, 111, "Анна", "последнее было не 350, а 450"); err != nil {
+	if _, _, err = engine.Process(ctx, 9003, 111, "Anna", "the latest expense was 450, not 350"); err != nil {
 		t.Fatal(err)
 	}
 	x, _ := repo.Get(ctx, first.ID)
@@ -157,13 +165,13 @@ func TestRealAgentHTTPDatabaseAndAdminAPI(t *testing.T) {
 		t.Fatal("latest mixed users", x, y)
 	}
 	script.enqueue(calls(tool("e", "get_expense", fmt.Sprintf(`{"id":%d}`, foreign.ID))), stop())
-	reply, _, err = engine.Process(ctx, 9004, 111, "Анна", fmt.Sprintf("покажи чужой расход #%d", foreign.ID))
-	if err != nil || !strings.Contains(reply, "не найдена") {
+	reply, _, err = engine.Process(ctx, 9004, 111, "Anna", fmt.Sprintf("show another user's expense #%d", foreign.ID))
+	if err != nil || !strings.Contains(reply, "Expense not found among your expenses.") {
 		t.Fatal("foreign expense exposed", reply, err)
 	}
 	// If the provider fails AFTER the SQL write, the entire turn must roll back.
 	script.enqueue(calls(tool("f", "create_expense", createArgs("12.34", "must roll back"))), 500)
-	if _, _, err = engine.Process(ctx, 9005, 111, "Анна", "кофе 12.34"); err == nil {
+	if _, _, err = engine.Process(ctx, 9005, 111, "Anna", "coffee 12.34"); err == nil {
 		t.Fatal("expected provider error")
 	}
 	page, _ = repo.List(ctx, domain.Filter{Query: "must roll back"})
@@ -171,7 +179,7 @@ func TestRealAgentHTTPDatabaseAndAdminAPI(t *testing.T) {
 		t.Fatal("LLM error committed mutation")
 	}
 	script.enqueue(calls(tool("g", "create_expense", createArgs("12.34", "retry once"))), stop())
-	if _, dup, err = engine.Process(ctx, 9005, 111, "Анна", "кофе 12.34"); err != nil || dup {
+	if _, dup, err = engine.Process(ctx, 9005, 111, "Anna", "coffee 12.34"); err != nil || dup {
 		t.Fatal("retry failed", dup, err)
 	}
 	var processed int
@@ -181,7 +189,7 @@ func TestRealAgentHTTPDatabaseAndAdminAPI(t *testing.T) {
 	// REST reaches the same rows and exact SQL aggregate through the real handler.
 	server := httptest.NewServer(api.New(repo, web.Files))
 	defer server.Close()
-	resp, err := http.Get(server.URL + "/api/summary?user_id=111&from=2026-10-01&to=2026-10-31&category=" + "%D0%B5%D0%B4%D0%B0")
+	resp, err := http.Get(server.URL + "/api/summary?user_id=111&from=2026-10-01&to=2026-10-31&category=" + url.QueryEscape(domain.Food))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +210,7 @@ func TestRealAgentTimeoutRollsBackSQL(t *testing.T) {
 	client := agent.NewClient(model.URL+"/v1", "test", "", model.Client())
 	engine := agent.NewEngine(repo, client, agent.Config{Timeout: 100 * time.Millisecond})
 	script.enqueue(calls(tool("a", "create_expense", createArgs("99.99", "timeout"))), time.Second)
-	if _, _, err := engine.Process(context.Background(), 7001, 333, "Катя", "кофе 99.99"); err == nil {
+	if _, _, err := engine.Process(context.Background(), 7001, 333, "Kate", "coffee 99.99"); err == nil {
 		t.Fatal("timeout should fail")
 	}
 	page, err := repo.List(context.Background(), domain.Filter{})
@@ -229,17 +237,17 @@ func TestRealAPICRUD(t *testing.T) {
 		b, _ := io.ReadAll(resp.Body)
 		return resp.StatusCode, b
 	}
-	status, b := request("POST", "/api/expenses", `{"user_id":444,"amount":"0.10","category":"еда","spent_at":"2026-10-16","comment":"API"}`)
+	status, b := request("POST", "/api/expenses", fmt.Sprintf(`{"user_id":444,"amount":"0.10","category":%q,"spent_at":"2026-10-16","comment":"API"}`, domain.Food))
 	if status != 201 {
 		t.Fatalf("create %d %s", status, b)
 	}
 	var x domain.Expense
 	json.Unmarshal(b, &x)
-	status, b = request("PUT", fmt.Sprintf("/api/expenses/%d", x.ID), `{"user_id":555,"amount":"0.20","category":"транспорт","spent_at":"2026-10-15","comment":"edited"}`)
+	status, b = request("PUT", fmt.Sprintf("/api/expenses/%d", x.ID), fmt.Sprintf(`{"user_id":555,"amount":"0.20","category":%q,"spent_at":"2026-10-15","comment":"edited"}`, domain.Transport))
 	if status != 200 {
 		t.Fatalf("update %d %s", status, b)
 	}
-	status, b = request("GET", "/api/expenses?user_id=555&from=2026-10-15&to=2026-10-15&category=%D1%82%D1%80%D0%B0%D0%BD%D1%81%D0%BF%D0%BE%D1%80%D1%82", "")
+	status, b = request("GET", "/api/expenses?user_id=555&from=2026-10-15&to=2026-10-15&category="+url.QueryEscape(domain.Transport), "")
 	var page domain.Page
 	json.Unmarshal(b, &page)
 	if status != 200 || page.Total != 1 || page.Items[0].Amount.String() != "0.20" {
